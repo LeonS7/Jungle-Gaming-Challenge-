@@ -925,3 +925,138 @@ test('três clientes PostgreSQL independentes não processam duas vezes o mesmo 
     }
   });
 });
+
+test('inbox e wagering fazem commit juntos e redelivery não duplica efeitos', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const config = loadApplicationConfig();
+    const clients = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        MikroORM.init(createMikroOrmOptions(config, schema)),
+      ),
+    );
+    const processors = clients.map((client) => new ProcessWager(
+      new PostgresWagerPersistence(client, schema),
+    ));
+    const command = createWager(playerId, walletId, {
+      externalTransactionId: 'aposta-inbox-atomica',
+      idempotencyKey: 'chave-aposta-inbox-atomica',
+      payloadHash: 'hash-aposta-inbox-atomica',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const identity = {
+      consumerName: 'wager-processor-v1',
+      messageId: 'mensagem-inbox-atomica',
+      payloadHash: 'c'.repeat(64),
+    };
+
+    try {
+      const attempts = await Promise.all(
+        processors.map((processor) => processor.executeFromInbox(command, identity)),
+      );
+      const first = attempts.find((attempt) => !attempt.duplicate);
+      if (!first?.result) {
+        throw new Error('Uma das mensagens paralelas precisava aplicar a transação.');
+      }
+      const conflictingReplay = expect(
+        processors[0]!.executeFromInbox(command, {
+          ...identity,
+          payloadHash: 'd'.repeat(64),
+        }),
+      ).rejects.toThrow('conteúdo diferente');
+      const inboxRows = await orm.em.getConnection().execute(
+        `select "consumer_name" as "consumerName", "message_id" as "messageId",
+                "payload_hash" as "payloadHash", "processed_at" is not null as "processed"
+         from ${table(schema, 'inbox_messages')}`,
+      );
+      const walletRows = await orm.em.getConnection().execute(
+        `select "balance"::text as "balance", "version"
+         from ${table(schema, 'wallets')} where "id" = ?`,
+        [walletId],
+      );
+      const ledgerRows = await orm.em.getConnection().execute(
+        `select "id" from ${table(schema, 'wallet_ledger_entries')}
+         where "transaction_id" = ?`,
+        [first.result.transactionId],
+      );
+
+      await conflictingReplay;
+      expect(attempts.filter((attempt) => attempt.duplicate)).toHaveLength(2);
+      expect(first.result.status).toBe(WagerTransactionStatus.Processed);
+      expect(inboxRows).toHaveLength(1);
+      expect(inboxRows[0]).toMatchObject({
+        consumerName: identity.consumerName,
+        messageId: identity.messageId,
+        payloadHash: identity.payloadHash,
+      });
+      expect(inboxRows[0]?.processed).toBe(true);
+      expect(walletRows).toEqual([{ balance: '75.00', version: 2 }]);
+      expect(ledgerRows).toHaveLength(1);
+    } finally {
+      await Promise.all(clients.map((client) => client.close(true)));
+    }
+  });
+});
+
+test('falha depois de inserir inbox reverte inbox, wagering, saldo, ledger e outbox', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    await orm.em.getConnection().execute(`
+      create function ${table(schema, 'falhar_outbox_inbox')}() returns trigger
+      language plpgsql as $$
+      begin
+        raise exception using errcode = 'P0001', message = 'Falha induzida na outbox da inbox';
+      end;
+      $$;
+      create trigger "falha_outbox_inbox"
+      before insert on ${table(schema, 'outbox_messages')}
+      for each row execute function ${table(schema, 'falhar_outbox_inbox')}();
+    `);
+    const processWager = new ProcessWager(persistence);
+    const command = createWager(playerId, walletId, {
+      externalTransactionId: 'aposta-inbox-rollback',
+      idempotencyKey: 'chave-aposta-inbox-rollback',
+      payloadHash: 'hash-aposta-inbox-rollback',
+      money: Money.from({ amount: '10.00', currency: 'BRL' }),
+    });
+
+    await expect(processWager.executeFromInbox(command, {
+      consumerName: 'wager-processor-v1',
+      messageId: 'mensagem-inbox-rollback',
+      payloadHash: 'e'.repeat(64),
+    })).rejects.toThrow('Falha induzida na outbox da inbox');
+    const counts = await orm.em.getConnection().execute(
+      `select
+        (select count(*) from ${table(schema, 'inbox_messages')}) as "inboxCount",
+        (select count(*) from ${table(schema, 'wager_transactions')}
+          where "external_transaction_id" = ?) as "transactionCount",
+        (select count(*) from ${table(schema, 'wallet_ledger_entries')}
+          where "wallet_id" = ? and "transaction_id" in (
+            select "id" from ${table(schema, 'wager_transactions')}
+            where "external_transaction_id" = ?
+          )) as "ledgerCount",
+        (select count(*) from ${table(schema, 'outbox_messages')}
+          where "transaction_id" in (
+            select "id" from ${table(schema, 'wager_transactions')}
+            where "external_transaction_id" = ?
+          )) as "outboxCount"`,
+      [
+        command.externalTransactionId,
+        walletId,
+        command.externalTransactionId,
+        command.externalTransactionId,
+      ],
+    );
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+
+    expect(counts).toEqual([{
+      inboxCount: '0',
+      transactionCount: '0',
+      ledgerCount: '0',
+      outboxCount: '0',
+    }]);
+    expect(walletRows).toEqual([{ balance: '100.00', version: 1 }]);
+  });
+});

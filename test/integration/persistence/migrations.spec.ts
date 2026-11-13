@@ -100,8 +100,47 @@ test('migration PostgreSQL aplica, protege invariantes e reverte o schema', asyn
         { table_name: 'wager_transactions' },
         { table_name: 'wallet_ledger_entries' },
         { table_name: 'outbox_messages' },
+        { table_name: 'inbox_messages' },
       ]),
     );
+
+    const inboxIdentity = {
+      consumerName: 'wager-processor-v1',
+      messageId: `mensagem-${randomUUID()}`,
+      payloadHash: 'f'.repeat(64),
+    };
+    await scopedOrm.em.getConnection().execute(
+      `insert into ${table(schema, 'inbox_messages')} (
+        "consumer_name", "message_id", "payload_hash", "received_at"
+      ) values (?, ?, ?, now())`,
+      [inboxIdentity.consumerName, inboxIdentity.messageId, inboxIdentity.payloadHash],
+    );
+    await expect(scopedOrm.em.getConnection().execute(
+      `insert into ${table(schema, 'inbox_messages')} (
+        "consumer_name", "message_id", "payload_hash", "received_at"
+      ) values (?, ?, ?, now())`,
+      [inboxIdentity.consumerName, inboxIdentity.messageId, inboxIdentity.payloadHash],
+    )).rejects.toThrow();
+    await expect(scopedOrm.em.getConnection().execute(
+      `update ${table(schema, 'inbox_messages')} set "payload_hash" = ?
+       where "consumer_name" = ? and "message_id" = ?`,
+      ['a'.repeat(64), inboxIdentity.consumerName, inboxIdentity.messageId],
+    )).rejects.toThrow('identidade de uma mensagem da inbox é imutável');
+    await expect(scopedOrm.em.getConnection().execute(
+      `delete from ${table(schema, 'inbox_messages')}
+       where "consumer_name" = ? and "message_id" = ?`,
+      [inboxIdentity.consumerName, inboxIdentity.messageId],
+    )).rejects.toThrow('Mensagens da inbox não podem ser removidas');
+    await scopedOrm.em.getConnection().execute(
+      `update ${table(schema, 'inbox_messages')} set "processed_at" = now()
+       where "consumer_name" = ? and "message_id" = ?`,
+      [inboxIdentity.consumerName, inboxIdentity.messageId],
+    );
+    await expect(scopedOrm.em.getConnection().execute(
+      `update ${table(schema, 'inbox_messages')} set "processed_at" = null
+       where "consumer_name" = ? and "message_id" = ?`,
+      [inboxIdentity.consumerName, inboxIdentity.messageId],
+    )).rejects.toThrow('não pode ser reaberta');
 
     const walletId = randomUUID();
     const playerId = 'jogador-integracao';
@@ -317,15 +356,20 @@ test('migration PostgreSQL aplica, protege invariantes e reverte o schema', asyn
 
     await scopedOrm.migrator.down();
     const remainingRows = await scopedOrm.em.getConnection().execute(
-      'select table_name from information_schema.tables where table_schema = ? and table_name in (?, ?, ?, ?)',
-      [schema, 'wallets', 'wager_transactions', 'wallet_ledger_entries', 'outbox_messages'],
+      'select table_name from information_schema.tables where table_schema = ? and table_name in (?, ?, ?, ?, ?)',
+      [schema, 'wallets', 'wager_transactions', 'wallet_ledger_entries', 'outbox_messages', 'inbox_messages'],
     );
-    expect(remainingRows).toHaveLength(3);
-    const removedOutbox = await scopedOrm.em.getConnection().execute(
+    expect(remainingRows).toHaveLength(4);
+    const removedInbox = await scopedOrm.em.getConnection().execute(
+      'select table_name from information_schema.tables where table_schema = ? and table_name = ?',
+      [schema, 'inbox_messages'],
+    );
+    expect(removedInbox).toHaveLength(0);
+    const retainedOutbox = await scopedOrm.em.getConnection().execute(
       'select table_name from information_schema.tables where table_schema = ? and table_name = ?',
       [schema, 'outbox_messages'],
     );
-    expect(removedOutbox).toHaveLength(0);
+    expect(retainedOutbox).toHaveLength(1);
     const removedSnapshot = await scopedOrm.em.getConnection().execute(
       'select column_name from information_schema.columns where table_schema = ? and table_name = ? and column_name = ?',
       [schema, 'wager_transactions', 'result_balance'],
@@ -338,6 +382,13 @@ test('migration PostgreSQL aplica, protege invariantes e reverte o schema', asyn
       [schema, 'wager_transactions', 'result_balance'],
     );
     expect(retainedSnapshot).toHaveLength(1);
+
+    await scopedOrm.migrator.down();
+    const retainedBaseSnapshot = await scopedOrm.em.getConnection().execute(
+      'select column_name from information_schema.columns where table_schema = ? and table_name = ? and column_name = ?',
+      [schema, 'wager_transactions', 'result_balance'],
+    );
+    expect(retainedBaseSnapshot).toHaveLength(1);
 
     await scopedOrm.migrator.down();
     const removedEarlierSnapshot = await scopedOrm.em.getConnection().execute(

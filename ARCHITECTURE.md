@@ -6,7 +6,7 @@
 - **Framework HTTP:** NestJS. O domínio permanece independente do NestJS e de seus decorators.
 - **ORM:** MikroORM 7.2.9 com driver PostgreSQL. No MikroORM 7, os decorators legados são importados de `@mikro-orm/decorators/legacy`; `ReflectMetadataProvider` é configurado explicitamente.
 - **Banco e mensageria locais:** PostgreSQL e LocalStack SQS são definidos no Docker Compose. O hook do LocalStack cria a fila FIFO de wagering e sua DLQ FIFO.
-- **Limite inicial da DLQ:** a fila local move uma mensagem após cinco recebimentos. Esse valor é provisório; a política final depende da fase de worker e retry.
+- **DLQ local:** a fila move uma mensagem após cinco recebimentos. O consumidor aplica backoff exponencial até 60 segundos; o limite de redrive é configurado na fila.
 - **Configuração:** os valores obrigatórios são lidos e validados antes da inicialização do NestJS.
 - **Health checks:** liveness verifica se o processo responde; readiness confirma acesso ao PostgreSQL e à fila SQS configurada.
 
@@ -35,13 +35,14 @@ A aplicação não inicia migrations automaticamente. A execução é explícita
 
 ## Persistência PostgreSQL
 
-- A migration versionada `Migration20261113000000_CreateWageringSchema` cria `wallets`, `wager_transactions` e `wallet_ledger_entries`. `Migration20261113010000_AddWagerResultSnapshot` adiciona o saldo e a moeda usados na repetição idempotente. `Migration20261113020000_StrengthenWagerResultSnapshot` exige que ambos os campos do snapshot estejam juntos ou ausentes. `Migration20261113030000_AddTransactionalOutbox` cria a outbox com reversão e reaplicação verificadas.
+- A migration versionada `Migration20261113000000_CreateWageringSchema` cria `wallets`, `wager_transactions` e `wallet_ledger_entries`. `Migration20261113010000_AddWagerResultSnapshot` adiciona o saldo e a moeda usados na repetição idempotente. `Migration20261113020000_StrengthenWagerResultSnapshot` exige que ambos os campos do snapshot estejam juntos ou ausentes. `Migration20261113030000_AddTransactionalOutbox` cria a outbox. `Migration20261113040000_AddInboxMessages` cria a inbox; todas têm reversão e reaplicação verificadas.
 - IDs persistidos usam `UUID`; dinheiro usa `NUMERIC(30,2)`, moeda usa `CHAR(3)` e datas usam `TIMESTAMPTZ`.
 - A Wallet tem unicidade por `(player_id, currency)`, saldo com constraint não negativa e versão inicial igual a 1. Um gatilho exige incremento unitário de versão quando o saldo muda e impede alterações de identidade.
 - Transações têm unicidade global da `idempotency_key`, conforme aprovado, e unicidade adicional por `(provider_id, external_transaction_id)`. Uma referência resolvida é protegida por chave estrangeira composta para manter provedor, ID externo, jogador, carteira, rodada e moeda consistentes.
 - O banco valida tipos, valores positivos, campos obrigatórios, timestamps e transições de estado. Um índice único parcial permite no máximo uma reversão processada por `(reference_transaction_id, kind)`; uma reversão e um rollback são tipos diferentes.
 - O ledger tem uma única entrada por `(wallet_id, transaction_id)`, valida a aritmética em constraint e rejeita `UPDATE`, `DELETE` e `TRUNCATE` por gatilhos. Outro gatilho impede lançamento para `LOSS`, `REJECTED` e `FAILED`.
 - `outbox_messages` referencia a transação financeira, mantém evento e número de sequência únicos por transação, valida a correspondência entre colunas e envelope JSON e tem índice parcial para mensagens ainda não publicadas. Gatilhos impedem editar o conteúdo, remover mensagens, truncar a tabela, diminuir tentativas ou reabrir uma mensagem publicada; metadados de tentativa e publicação permanecem atualizáveis.
+- `inbox_messages` usa chave primária `(consumer_name, message_id)`, valida SHA-256 hexadecimal e preserva o hash e o horário de recebimento. Gatilhos impedem alterar a identidade, remover/truncar mensagens ou reabrir uma mensagem processada; o único avanço permitido é preencher `processed_at`.
 - A migration usa funções de gatilho por tabela e constraints locais; não cria locks globais. `FOR KEY SHARE` no gatilho do ledger protege a leitura da transação referenciada durante a validação do lançamento.
 
 ## BET, WIN, LOSS, REFUND e ROLLBACK: concorrência, idempotência e atomicidade
@@ -61,7 +62,19 @@ A aplicação não inicia migrations automaticamente. A execução é explícita
 - A chave de idempotência tem unicidade global no PostgreSQL. Colisões entre carteiras distintas são resolvidas pela constraint do banco; após rollback, o caso de uso carrega o resultado persistido e compara o hash dos dados recebidos.
 - Testes com PostgreSQL real cobrem chamadas concorrentes idênticas, duas apostas disputando saldo, corrida da chave global entre carteiras, reversões concorrentes e três clientes PostgreSQL independentes tentando a mesma reversão, referências inválidas e pendentes, eventos, abertura de carteira, imutabilidade da outbox, falha induzida no ledger e na outbox com rollback financeiro e reversão/reaplicação das migrations. Três clientes independentes não constituem um ensaio com três processos da aplicação.
 
-Esses mecanismos são compartilhados entre instâncias porque estado e arbitragem ficam no PostgreSQL; ainda não foi executado ensaio com três processos da aplicação. A outbox é persistida, mas inbox e publicação de eventos ainda não foram implementados. Nenhum evento de negócio é publicado pelo caso de uso atual.
+Esses mecanismos são compartilhados entre instâncias porque estado e arbitragem ficam no PostgreSQL; ainda não foi executado ensaio ponta a ponta com três processos da aplicação. A outbox é persistida e a inbox já protege o consumidor de entrada, mas a publicação de eventos de negócio ainda não foi implementada.
+
+## Entrada assíncrona por SQS e inbox
+
+- `WagerSqsConsumer` resolve as URLs das filas configuradas e faz long polling FIFO com uma mensagem por vez. Cada processo trabalha sequencialmente; grupos de mensagens e processos diferentes podem avançar em paralelo, e a linha da carteira continua sendo o ponto de serialização financeira.
+- `parseWagerQueueMessage` valida `messageId`, `type`, `occurredAt` e o objeto `data`; em seguida delega os campos do negócio ao parser de comando da Application, também usado pelo DTO HTTP, e calcula um SHA-256 do corpo original para a identidade da inbox. A chave `messageId` do envelope é usada como identidade estável entre redeliveries.
+- `ProcessWager.executeFromInbox` registra `(consumerName, messageId)` com `INSERT ... ON CONFLICT` dentro da mesma transação PostgreSQL usada para idempotência, lock da carteira, saldo, ledger e outbox. O hash é comparado ao receber uma chave existente; conteúdo diferente é conflito permanente. A chave única faz instâncias concorrentes aguardarem o resultado transacional do primeiro consumidor.
+- Uma mensagem nova só recebe `processed_at` no mesmo commit do resultado financeiro ou de uma rejeição de negócio. A repetição de mensagem já processada não entra no fluxo financeiro novamente. Se o processamento falha antes do commit, inbox e efeitos financeiros são revertidos em conjunto.
+- O consumidor só envia `DeleteMessage` depois do retorno após commit. Um heartbeat renova a visibilidade a cada 15 segundos enquanto o processamento está ativo. Erros de negócio terminais são registrados como inbox concluída antes do ack; erros operacionais ficam na fila com backoff exponencial limitado a 60 segundos e obedecem a redrive da DLQ. Conteúdo inválido vai para a DLQ antes de remover a mensagem original, usando o `MessageId` de origem para que conteúdos iguais de mensagens distintas não sejam suprimidos pela deduplicação FIFO.
+- No encerramento do módulo, o long polling é abortado e o loop aguarda terminar a mensagem em andamento. A inbox não tem expurgo nesta fase: remover registros antigos faria redeliveries tardias perderem a proteção persistente.
+- Os testes PostgreSQL verificam três clientes independentes recebendo o mesmo ID simultaneamente, uma única movimentação financeira, colisão de conteúdo, rollback conjunto quando a outbox falha e as constraints/imutabilidade da tabela. O teste de integração com LocalStack cria filas FIFO temporárias e verifica commit antes do ack, redelivery, retry após falha transitória, redrive automático após o limite de tentativas e envio de payload inválido à DLQ.
+
+A inbox e o consumidor de entrada SQS estão implementados; a outbox ainda não publica eventos de negócio. Falta o publisher transacional concorrente da outbox, coberto na fase seguinte.
 
 ## Entrada HTTP de wagering
 

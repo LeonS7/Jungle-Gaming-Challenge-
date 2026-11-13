@@ -4,6 +4,7 @@
  */
 import { MikroORM, type EntityManager } from '@mikro-orm/postgresql';
 import { Money } from '../../domain/money/money.js';
+import { InboxMessage } from '../../domain/messaging/inbox-message.js';
 import { Wallet } from '../../domain/wallet/wallet.js';
 import {
   LedgerDirection,
@@ -21,6 +22,7 @@ import {
   WagerIdentityAlreadyExistsError,
   type WagerPersistencePort,
   type WagerTransactionSession,
+  type InboxMessageRegistration,
   type PersistedWagerResult,
 } from '../../application/wagering/wager-processing.port.js';
 import { PersistenceUnavailableError } from '../../application/shared/persistence-unavailable.error.js';
@@ -104,6 +106,69 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
       'all',
       this.entityManager.getTransactionContext(),
     );
+  }
+
+  async registerInboxMessage(
+    message: InboxMessage,
+  ): Promise<InboxMessageRegistration> {
+    const inserted = await this.execute(
+      `insert into ${qualifiedTable(this.schema, 'inbox_messages')} (
+        "consumer_name", "message_id", "payload_hash", "received_at"
+      ) values (?, ?, ?, ?)
+      on conflict ("consumer_name", "message_id") do nothing
+      returning "message_id"`,
+      [message.consumerName, message.messageId, message.payloadHash, message.receivedAt],
+    );
+    if (inserted.length === 1) {
+      return 'REGISTERED';
+    }
+
+    const existing = await this.execute(
+      `select "payload_hash" as "payloadHash", "processed_at" as "processedAt"
+       from ${qualifiedTable(this.schema, 'inbox_messages')}
+       where "consumer_name" = ? and "message_id" = ?
+       for update`,
+      [message.consumerName, message.messageId],
+    );
+    const row = existing[0] as unknown as {
+      readonly payloadHash: string;
+      readonly processedAt: Date | string | null;
+    } | undefined;
+    if (!row) {
+      throw new WagerPersistenceInvariantError(
+        'Uma mensagem conflitante da inbox não foi encontrada para leitura.',
+      );
+    }
+    if (row.payloadHash.trim() !== message.payloadHash) {
+      return 'PAYLOAD_CONFLICT';
+    }
+    return row.processedAt === null ? 'INCOMPLETE' : 'DUPLICATE';
+  }
+
+  async markInboxMessageProcessed(message: InboxMessage): Promise<void> {
+    if (!message.isProcessed() || !message.processedAt) {
+      throw new WagerPersistenceInvariantError(
+        'A mensagem da inbox precisa ser marcada como processada antes da persistência.',
+      );
+    }
+    const updated = await this.execute(
+      `update ${qualifiedTable(this.schema, 'inbox_messages')}
+       set "processed_at" = ?
+       where "consumer_name" = ? and "message_id" = ?
+         and "payload_hash" = ? and "processed_at" is null
+       returning "message_id"`,
+      [
+        message.processedAt,
+        message.consumerName,
+        message.messageId,
+        message.payloadHash,
+      ],
+    );
+    if (updated.length !== 1) {
+      throw new WagerPersistenceInvariantError(
+        'A mensagem da inbox não pôde ser concluída na transação atual.',
+      );
+    }
   }
 
   async findByIdempotencyKey(key: string): Promise<PersistedWagerResult | null> {

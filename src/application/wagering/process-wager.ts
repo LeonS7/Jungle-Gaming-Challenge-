@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Money } from '../../domain/money/money.js';
+import { InboxMessage } from '../../domain/messaging/inbox-message.js';
 import { InsufficientWalletBalanceError, Wallet } from '../../domain/wallet/wallet.js';
 import {
   LedgerDirection,
@@ -28,6 +29,10 @@ import type {
   WagerTransactionSession,
 } from './wager-processing.port.js';
 import { WagerIdentityAlreadyExistsError } from './wager-processing.port.js';
+import type { InboxMessageRegistration } from './wager-processing.port.js';
+import {
+  InboxMessagePayloadConflictError,
+} from '../messaging/inbox-errors.js';
 
 export type ProcessableWagerKind =
   | WagerTransactionKind.Bet
@@ -60,6 +65,16 @@ export interface ProcessWagerResult {
   readonly idempotentReplay: boolean;
   readonly failureCode?: string;
 }
+
+export interface InboxMessageIdentity {
+  readonly consumerName: string;
+  readonly messageId: string;
+  readonly payloadHash: string;
+}
+
+type InternalWagerResult =
+  | { readonly kind: 'RESULT'; readonly result: ProcessWagerResult }
+  | { readonly kind: 'DUPLICATE_INBOX_MESSAGE' };
 
 export class IdempotencyConflictError extends Error {
   constructor() {
@@ -141,7 +156,37 @@ export class ProcessWager {
   constructor(private readonly persistence: WagerPersistencePort) {}
 
   async execute(command: ProcessWagerCommand): Promise<ProcessWagerResult> {
+    const outcome = await this.executeInternal(command);
+    if (outcome.kind === 'DUPLICATE_INBOX_MESSAGE') {
+      throw new WagerPersistenceInvariantError(
+        'Uma execução HTTP não pode ser deduplicada por inbox.',
+      );
+    }
+    return outcome.result;
+  }
+
+  async executeFromInbox(
+    command: ProcessWagerCommand,
+    identity: InboxMessageIdentity,
+  ): Promise<{ readonly duplicate: boolean; readonly result?: ProcessWagerResult }> {
+    const outcome = await this.executeInternal(command, identity);
+    return outcome.kind === 'DUPLICATE_INBOX_MESSAGE'
+      ? { duplicate: true }
+      : { duplicate: false, result: outcome.result };
+  }
+
+  async recordTerminalInboxMessage(identity: InboxMessageIdentity): Promise<void> {
+    await this.completeInboxOutsideWager(identity);
+  }
+
+  private async executeInternal(
+    command: ProcessWagerCommand,
+    inboxIdentity?: InboxMessageIdentity,
+  ): Promise<InternalWagerResult> {
     const createdAt = new Date();
+    const inboxMessage = inboxIdentity
+      ? InboxMessage.receive(inboxIdentity)
+      : undefined;
     const transaction = WagerTransaction.create({
       id: randomUUID(),
       providerId: command.providerId,
@@ -160,11 +205,28 @@ export class ProcessWager {
 
     try {
       return await this.persistence.transaction(async (session) => {
+        if (inboxMessage) {
+          const registration = await session.registerInboxMessage(inboxMessage);
+          this.assertInboxRegistration(registration);
+          if (registration === 'DUPLICATE') {
+            return { kind: 'DUPLICATE_INBOX_MESSAGE' };
+          }
+        }
+        const complete = async (
+          result: ProcessWagerResult,
+        ): Promise<InternalWagerResult> => {
+          if (inboxMessage) {
+            inboxMessage.markProcessed(new Date());
+            await session.markInboxMessageProcessed(inboxMessage);
+          }
+          return { kind: 'RESULT', result };
+        };
+
         const existingBeforeLock = await session.findByIdempotencyKey(
           command.idempotencyKey,
         );
         if (existingBeforeLock) {
-          return this.replay(existingBeforeLock, command.payloadHash);
+          return complete(this.replay(existingBeforeLock, command.payloadHash));
         }
 
         const wallet = await session.findWalletForUpdate(command.walletId);
@@ -180,7 +242,7 @@ export class ProcessWager {
           command.idempotencyKey,
         );
         if (existingAfterLock) {
-          return this.replay(existingAfterLock, command.payloadHash);
+          return complete(this.replay(existingAfterLock, command.payloadHash));
         }
 
         if (wallet.currency !== command.money.currency) {
@@ -196,13 +258,13 @@ export class ProcessWager {
             transaction.referenceExternalTransactionId ===
             transaction.externalTransactionId
           ) {
-            return this.reject(
+            return complete(await this.reject(
               session,
               transaction,
               wallet,
               occurredAt,
               'INVALID_REFERENCE',
-            );
+            ));
           }
 
           const candidate = await session.findReference(
@@ -214,7 +276,11 @@ export class ProcessWager {
             candidate.status === WagerTransactionStatus.Pending ||
             candidate.status === WagerTransactionStatus.PendingReference
           ) {
-            return this.deferUntilReferenceExists(session, transaction, occurredAt);
+            return complete(await this.deferUntilReferenceExists(
+              session,
+              transaction,
+              occurredAt,
+            ));
           }
           reference = candidate;
         }
@@ -226,13 +292,13 @@ export class ProcessWager {
           if (!(error instanceof InvalidWagerTransactionError)) {
             throw error;
           }
-          return this.reject(
+          return complete(await this.reject(
             session,
             transaction,
             wallet,
             occurredAt,
             'INVALID_REFERENCE',
-          );
+          ));
         }
 
         if (
@@ -241,13 +307,13 @@ export class ProcessWager {
             transaction.kind === WagerTransactionKind.Rollback) &&
           await session.hasProcessedReversal(reference.id, transaction.kind)
         ) {
-          return this.reject(
+          return complete(await this.reject(
             session,
             transaction,
             wallet,
             occurredAt,
             'ALREADY_REVERSED',
-          );
+          ));
         }
 
         let entry: WalletLedgerEntry | undefined;
@@ -276,25 +342,25 @@ export class ProcessWager {
             throw error;
           }
           if (transaction.kind === WagerTransactionKind.Bet) {
-            return this.reject(
+            return complete(await this.reject(
               session,
               transaction,
               wallet,
               occurredAt,
               'INSUFFICIENT_FUNDS',
-            );
+            ));
           }
           if (
             transaction.kind === WagerTransactionKind.Refund ||
             transaction.kind === WagerTransactionKind.Rollback
           ) {
-            return this.reject(
+            return complete(await this.reject(
               session,
               transaction,
               wallet,
               occurredAt,
               'REVERSAL_INSUFFICIENT_FUNDS',
-            );
+            ));
           }
           throw error;
         }
@@ -341,12 +407,12 @@ export class ProcessWager {
           });
         }
 
-        return {
+        return complete({
           transactionId: transaction.id,
           status: WagerTransactionStatus.Processed,
           balance: wallet.balance,
           idempotentReplay: false,
-        };
+        });
       });
     } catch (error) {
       if (!(error instanceof WagerIdentityAlreadyExistsError)) {
@@ -366,8 +432,38 @@ export class ProcessWager {
         );
       }
 
-      return this.replay(existing, command.payloadHash);
+      const result = this.replay(existing, command.payloadHash);
+      if (inboxIdentity) {
+        await this.completeInboxOutsideWager(inboxIdentity);
+      }
+      return { kind: 'RESULT', result };
     }
+  }
+
+  private assertInboxRegistration(registration: InboxMessageRegistration): void {
+    if (registration === 'PAYLOAD_CONFLICT') {
+      throw new InboxMessagePayloadConflictError();
+    }
+    if (registration === 'INCOMPLETE') {
+      throw new WagerPersistenceInvariantError(
+        'A inbox contém uma mensagem sem commit de processamento anterior.',
+      );
+    }
+  }
+
+  private async completeInboxOutsideWager(
+    identity: InboxMessageIdentity,
+  ): Promise<void> {
+    const message = InboxMessage.receive(identity);
+    await this.persistence.transaction(async (session) => {
+      const registration = await session.registerInboxMessage(message);
+      this.assertInboxRegistration(registration);
+      if (registration === 'DUPLICATE') {
+        return;
+      }
+      message.markProcessed(new Date());
+      await session.markInboxMessageProcessed(message);
+    });
   }
 
   private async reject(

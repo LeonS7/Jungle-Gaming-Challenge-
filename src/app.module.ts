@@ -23,10 +23,15 @@ import { PostgresWalletRead } from './infrastructure/persistence/postgres-wallet
 import { WageringController } from './presentation/wagering/wagering.controller.js';
 import { WageringQueriesController } from './presentation/wagering/wagering-queries.controller.js';
 import { WalletsController } from './presentation/wallets/wallets.controller.js';
+import { WagerSqsConsumer } from './infrastructure/messaging/wager-sqs-consumer.js';
 
 @Module({})
 export class AppModule {
-  static register(config: ApplicationConfig, schema?: string): DynamicModule {
+  static register(
+    config: ApplicationConfig,
+    schema?: string,
+    enableQueueConsumer = true,
+  ): DynamicModule {
     return {
       module: AppModule,
       imports: [
@@ -71,6 +76,7 @@ export class AppModule {
           useFactory: (orm: MikroORM) =>
             new OpenWallet(new PostgresWalletOpeningPersistence(orm, schema)),
         },
+        ...(enableQueueConsumer ? [WagerSqsConsumer] : []),
       ],
     };
   }

@@ -3,6 +3,7 @@
  * Assinatura: Leonardo de Souza da Luz
  */
 import { Money } from '../../domain/money/money.js';
+import { InboxMessage } from '../../domain/messaging/inbox-message.js';
 import { Wallet } from '../../domain/wallet/wallet.js';
 import {
   WagerTransaction,
@@ -20,7 +21,15 @@ export interface PersistedWagerResult {
   readonly failureCode: string | null;
 }
 
+export type InboxMessageRegistration =
+  | 'REGISTERED'
+  | 'DUPLICATE'
+  | 'PAYLOAD_CONFLICT'
+  | 'INCOMPLETE';
+
 export interface WagerTransactionSession {
+  registerInboxMessage(message: InboxMessage): Promise<InboxMessageRegistration>;
+  markInboxMessageProcessed(message: InboxMessage): Promise<void>;
   findByIdempotencyKey(key: string): Promise<PersistedWagerResult | null>;
   findWalletForUpdate(walletId: string): Promise<Wallet | null>;
   findReference(

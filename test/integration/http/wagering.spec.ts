@@ -139,7 +139,7 @@ async function withHttpApplication(
     await scopedOrm.migrator.up();
     await seedWallet(scopedOrm, schema, walletId, playerId);
 
-    application = await NestFactory.create(AppModule.register(config, schema), {
+    application = await NestFactory.create(AppModule.register(config, schema, false), {
       logger: false,
     });
     await application.listen(0, '127.0.0.1');
