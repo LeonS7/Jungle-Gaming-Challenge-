@@ -1,0 +1,39 @@
+{
+  "name": "jungle-distributed-wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": ">=1.0.0 <2.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "start": "bun run build && bun dist/src/main.js",
+    "db:migrate": "bun run src/infrastructure/persistence/run-migrations.ts up",
+    "db:migrate:down": "bun run src/infrastructure/persistence/run-migrations.ts down",
+    "test": "bun test --timeout=30000",
+    "test:integration": "bun test --timeout=30000 test/integration",
+    "test:check": "bun test --check"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1166.0",
+    "@mikro-orm/core": "^7.2.8",
+    "@mikro-orm/decorators": "^7.2.8",
+    "@mikro-orm/migrations": "^7.2.8",
+    "@mikro-orm/nestjs": "^7.1.0",
+    "@mikro-orm/postgresql": "^7.2.8",
+    "@nestjs/common": "^12.4.2",
+    "@nestjs/core": "^12.4.2",
+    "@nestjs/platform-express": "^12.4.2",
+    "decimal.js": "^10.6.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  }
+}

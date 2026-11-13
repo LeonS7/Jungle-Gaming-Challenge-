@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.bun-tmp/
+.snapshot-jungle_wagering.json
+.env
+.localstack/
+*.log
+Thumbs.db
+.DS_Store
