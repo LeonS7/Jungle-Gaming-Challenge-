@@ -82,6 +82,14 @@ Esses mecanismos são compartilhados entre instâncias porque estado e arbitrage
 - Os identificadores da transação interna, da transação externa interna e da chave são UUIDs gerados pelo caso de uso. O provedor interno é `internal`; não é necessário reservar um prefixo nas chaves externas.
 - `POST /wallets` valida dinheiro decimal como string e responde 409 para a constraint `wallets_player_currency_uq`. Testes HTTP reais cobrem abertura positiva, saldo zero, criação concorrente duplicada e rollback induzido no ledger.
 
+## Consultas HTTP
+
+- `GetWallet`, `GetWalletLedger` e `GetWagerTransaction` dependem de portas de leitura; adapters PostgreSQL fazem projeções SQL sem carregar entidades de escrita nem alterar estado financeiro.
+- A carteira retorna `id`, `playerId`, `balance` serializado por `Money` e `version`. Consultas de transação omitem `idempotencyKey` e `payloadHash`, que são detalhes internos.
+- O ledger é ordenado por `created_at DESC, id DESC`. O cursor é base64url com versão, carteira, timestamp PostgreSQL em microssegundos e ID do lançamento. O adapter usa comparação de tupla `(created_at, id)` e índice existente, sem `OFFSET`; o ID desempata timestamps iguais. O cursor é tratado como opaco pelo contrato HTTP, mas não é uma assinatura criptográfica.
+- O limite padrão é 50 lançamentos e o máximo é 100. Cursor malformado ou de outra carteira responde 400; carteira ou transação inexistente responde 404; indisponibilidade reconhecida do PostgreSQL responde 503.
+- Testes HTTP com PostgreSQL real verificam projeções monetárias como strings, busca por ID e identidade do provedor, paginação de múltiplas páginas, cursor/limite inválidos e recursos inexistentes.
+
 ## Verificação
 
 - `bun run check`: verifica os tipos da aplicação e dos testes.

@@ -51,14 +51,25 @@ A rota ainda não tem autenticação. A decisão e o ponto de extensão para um 
 
 `POST /wallets` cria uma carteira com `playerId` e `initialBalance` (`amount` decimal como string com duas casas e `currency` ISO-4217). Responde `201` com `id`, `playerId`, `balance` e `version`; duplicidade por jogador e moeda responde `409`. Um saldo inicial positivo cria `OPENING` e um crédito de ledger; saldo zero não cria movimento financeiro.
 
+## Consultas HTTP
+
+- `GET /wallets/:walletId` retorna `id`, `playerId`, `balance` e `version` da carteira. Carteira inexistente responde `404`.
+- `GET /wallets/:walletId/ledger?cursor=...&limit=50` retorna lançamentos do mais recente para o mais antigo. O limite padrão é 50 e o máximo é 100. `nextCursor` é opaco e deve ser enviado sem alterações na próxima página; ele é vinculado à carteira e usa a data completa e o ID do lançamento para manter a paginação estável.
+- `GET /wagering/transactions/:transactionId` consulta pelo ID interno da transação.
+- `GET /providers/:providerId/wagering/transactions/:externalTransactionId` consulta pela identidade externa do provedor.
+
+As consultas retornam valores monetários como strings com duas casas decimais. As respostas de transação não expõem a chave de idempotência nem o hash interno do payload.
+
 ## Estado atual
 
 A fundação inclui configuração validada, health checks, PostgreSQL e LocalStack no Compose. O domínio contém `Money`, `Wallet`, `WagerTransaction` e `WalletLedgerEntry`. Migrations reversíveis definem unicidade, saldo não negativo, transições de estado e imutabilidade do ledger.
 
-A fase atual implementa `BET`, `WIN` sem referência e `LOSS` com persistência PostgreSQL e outbox transacional. Cada operação bloqueia somente sua carteira com `FOR UPDATE`. Para `BET`, o débito; para `WIN`, o crédito; e, em ambos, o lançamento imutável, o resultado terminal e os eventos são gravados na mesma transação SQL. Saldo insuficiente em `BET` vira rejeição sem lançamento ou débito e registra um evento de rejeição. Para `LOSS`, o serviço registra o resultado terminal e o saldo observado sem alterar a carteira nem o ledger. A chave global de idempotência e a unicidade por `(providerId, externalTransactionId)` são garantidas no banco. Repetições idempotentes devolvem o saldo histórico gravado sem duplicar eventos, e dados diferentes com a mesma chave são rejeitados.
+A API HTTP de escrita e consulta está implementada para abertura de carteira, `BET`, `WIN` sem referência e `LOSS`. As consultas usam PostgreSQL e não alteram estado financeiro. A consulta de ledger usa paginação por chave `(created_at, id)`, sem `OFFSET`, para evitar repetir ou pular registros quando houver timestamps iguais.
+
+O processamento financeiro de `BET`, `WIN` sem referência e `LOSS` usa persistência PostgreSQL e outbox transacional. Cada operação bloqueia somente sua carteira com `FOR UPDATE`. Para `BET`, o débito; para `WIN`, o crédito; e, em ambos, o lançamento imutável, o resultado terminal e os eventos são gravados na mesma transação SQL. Saldo insuficiente em `BET` vira rejeição sem lançamento ou débito e registra um evento de rejeição. Para `LOSS`, o serviço registra o resultado terminal e o saldo observado sem alterar a carteira nem o ledger. A chave global de idempotência e a unicidade por `(providerId, externalTransactionId)` são garantidas no banco. Repetições idempotentes devolvem o saldo histórico gravado sem duplicar eventos, e dados diferentes com a mesma chave são rejeitados.
 
 Os eventos `WagerTransactionProcessed`, `WagerTransactionRejected` e `WalletBalanceChanged` são armazenados em `outbox_messages` como envelopes JSON versionados. `LOSS` não gera `WalletBalanceChanged`; abertura de carteira com saldo positivo gera os eventos de `OPENING`, e saldo inicial zero não gera evento. A outbox ainda não tem publisher SQS: nenhum desses eventos é publicado nesta fase.
 
-Ainda faltam consultas de carteira, inbox, publisher da outbox, processamento SQS, resolução e reprocessamento de referências de `WIN`, operações `REFUND` e `ROLLBACK` e ensaios com três instâncias da aplicação. FIFO do SQS não é usado como garantia de consistência financeira.
+Ainda faltam `REFUND` e `ROLLBACK` no caso de uso, referências de `WIN`, tratamento de referências ausentes, inbox persistente, consumer e publisher SQS, reprocessamento de referências, reconciliação, observabilidade obrigatória e ensaios com três ou mais instâncias da aplicação. FIFO do SQS não é usado como garantia de consistência financeira.
 
-Verificações: `bun run check`, `bun run build`, `bun test` e `bun run test:integration`. Os testes de integração usam PostgreSQL real, criam schemas isolados e verificam rollback de migrations, concorrência, idempotência, eventos de BET, WIN, LOSS e OPENING, imutabilidade da outbox e rollback financeiro quando a outbox falha. O PostgreSQL do Compose precisa estar acessível para executá-los.
+Verificações: `bun run check`, `bun run build`, `bun test` e `bun run test:integration`. Os testes HTTP de consulta usam PostgreSQL real e cobrem carteira inexistente, validação de cursor/limite, paginação sem repetição, consulta por ID interno e busca pelo provedor. Os demais testes de integração criam schemas isolados e verificam rollback de migrations, concorrência, idempotência, eventos de BET, WIN, LOSS e OPENING, imutabilidade da outbox e rollback financeiro quando a outbox falha. O PostgreSQL precisa estar acessível para executá-los.

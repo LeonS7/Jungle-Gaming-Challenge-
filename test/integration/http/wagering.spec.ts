@@ -1,5 +1,5 @@
 /**
- * Esta página verifica o contrato HTTP de BET, WIN e LOSS com NestJS e PostgreSQL reais.
+ * Esta página verifica consultas e operações HTTP com NestJS e PostgreSQL reais.
  * Assinatura: Leonardo de Souza da Luz
  */
 import { randomUUID } from 'node:crypto';
@@ -29,6 +29,31 @@ interface HttpResponseBody {
   readonly failureCode?: string;
   readonly code?: string;
   readonly version?: number;
+}
+
+interface WalletLedgerHttpResponse {
+  readonly items?: readonly {
+    readonly id: string;
+    readonly transactionId: string;
+    readonly direction: string;
+    readonly money: { readonly amount: string; readonly currency: string };
+    readonly balanceBefore: { readonly amount: string; readonly currency: string };
+    readonly balanceAfter: { readonly amount: string; readonly currency: string };
+    readonly createdAt: string;
+  }[];
+  readonly nextCursor?: string | null;
+  readonly code?: string;
+}
+
+interface WagerReadHttpResponse {
+  readonly transactionId?: string;
+  readonly providerId?: string;
+  readonly externalTransactionId?: string;
+  readonly kind?: string;
+  readonly status?: string;
+  readonly money?: { readonly amount: string; readonly currency: string };
+  readonly balance?: { readonly amount: string; readonly currency: string } | null;
+  readonly code?: string;
 }
 
 function table(schema: string, name: string): string {
@@ -638,5 +663,150 @@ test('POST wallets reverte a abertura inteira quando o ledger ou a outbox falha'
        )`,
       [outboxFailurePlayerId],
     )).toHaveLength(0);
+  });
+});
+
+test('GET wallets retorna a carteira e informa quando ela não existe', async () => {
+  await withHttpApplication(async ({ baseUrl, walletId }) => {
+    const response = await fetch(`${baseUrl}/wallets/${walletId}`);
+    const body = await response.json() as HttpResponseBody;
+
+    expect(response.status).toBe(200);
+    expect(body.id).toBe(walletId);
+    expect(body.balance).toEqual({ amount: '100.00', currency: 'BRL' });
+    expect(body.version).toBe(1);
+
+    const defaultLedgerResponse = await fetch(`${baseUrl}/wallets/${walletId}/ledger`);
+    const defaultLedger = await defaultLedgerResponse.json() as WalletLedgerHttpResponse;
+    expect(defaultLedgerResponse.status).toBe(200);
+    expect(defaultLedger.items).toHaveLength(1);
+    expect(defaultLedger.nextCursor).toBeNull();
+
+    const missing = await fetch(`${baseUrl}/wallets/${randomUUID()}`);
+    const missingBody = await missing.json() as HttpResponseBody;
+    expect(missing.status).toBe(404);
+    expect(missingBody.code).toBe('WALLET_NOT_FOUND');
+
+    const invalid = await fetch(`${baseUrl}/wallets/nao-e-uuid`);
+    const invalidBody = await invalid.json() as HttpResponseBody;
+    expect(invalid.status).toBe(400);
+    expect(invalidBody.code).toBe('INVALID_REQUEST');
+  });
+});
+
+test('GET wallet ledger pagina por cursor opaco sem repetir lançamentos', async () => {
+  await withHttpApplication(async ({ baseUrl, playerId, walletId }) => {
+    for (const [index, amount] of ['3.00', '4.00', '5.00'].entries()) {
+      const response = await submit(
+        baseUrl,
+        createRequest(playerId, walletId, {
+          externalTransactionId: `lancamento-pagina-${index}`,
+          money: { amount, currency: 'BRL' },
+        }),
+        `chave-lancamento-pagina-${index}`,
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const firstPageResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/ledger?limit=2`,
+    );
+    const firstPage = await firstPageResponse.json() as WalletLedgerHttpResponse;
+    expect(firstPageResponse.status).toBe(200);
+    expect(firstPage.items).toHaveLength(2);
+    expect(firstPage.nextCursor).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(firstPage.items?.[0]?.createdAt).toBeDefined();
+    expect(firstPage.items?.[0]?.money.amount).toMatch(/^\d+\.\d{2}$/);
+    expect(Date.parse(firstPage.items?.[0]?.createdAt ?? ''))
+      .toBeGreaterThanOrEqual(Date.parse(firstPage.items?.[1]?.createdAt ?? ''));
+
+    const otherWalletResponse = await createWallet(baseUrl, {
+      playerId: `jogador-${randomUUID()}`,
+      initialBalance: { amount: '0.00', currency: 'BRL' },
+    });
+    const otherWallet = await otherWalletResponse.json() as HttpResponseBody;
+    const cursorFromOtherWallet = await fetch(
+      `${baseUrl}/wallets/${otherWallet.id}/ledger?cursor=${encodeURIComponent(firstPage.nextCursor ?? '')}`,
+    );
+    expect(cursorFromOtherWallet.status).toBe(400);
+
+    const cursor = encodeURIComponent(firstPage.nextCursor ?? '');
+    const secondPageResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/ledger?limit=2&cursor=${cursor}`,
+    );
+    const secondPage = await secondPageResponse.json() as WalletLedgerHttpResponse;
+    expect(secondPageResponse.status).toBe(200);
+    expect(secondPage.items).toHaveLength(2);
+    expect(secondPage.nextCursor).toBeNull();
+
+    const allEntryIds = [
+      ...(firstPage.items ?? []).map((entry) => entry.id),
+      ...(secondPage.items ?? []).map((entry) => entry.id),
+    ];
+    expect(new Set(allEntryIds).size).toBe(4);
+
+    const invalidLimit = await fetch(
+      `${baseUrl}/wallets/${walletId}/ledger?limit=101`,
+    );
+    const invalidLimitBody = await invalidLimit.json() as HttpResponseBody;
+    expect(invalidLimit.status).toBe(400);
+    expect(invalidLimitBody.code).toBe('INVALID_REQUEST');
+
+    const invalidCursor = await fetch(
+      `${baseUrl}/wallets/${walletId}/ledger?cursor=cursor-invalido`,
+    );
+    const invalidCursorBody = await invalidCursor.json() as HttpResponseBody;
+    expect(invalidCursor.status).toBe(400);
+    expect(invalidCursorBody.code).toBe('INVALID_REQUEST');
+
+    const missingWalletLedger = await fetch(
+      `${baseUrl}/wallets/${randomUUID()}/ledger`,
+    );
+    expect(missingWalletLedger.status).toBe(404);
+  });
+});
+
+test('GET transaction consulta pelo ID interno e pela identidade do provedor', async () => {
+  await withHttpApplication(async ({ baseUrl, playerId, walletId }) => {
+    const request = createRequest(playerId, walletId, {
+      externalTransactionId: 'aposta-consulta-http',
+    });
+    const created = await submit(baseUrl, request, 'chave-consulta-http');
+    const createdBody = await created.json() as HttpResponseBody;
+    expect(created.status).toBe(200);
+
+    const byIdResponse = await fetch(
+      `${baseUrl}/wagering/transactions/${createdBody.transactionId}`,
+    );
+    const byId = await byIdResponse.json() as WagerReadHttpResponse;
+    expect(byIdResponse.status).toBe(200);
+    expect(byId.transactionId).toBe(createdBody.transactionId);
+    expect(byId.providerId).toBe('provedor-http');
+    expect(byId.externalTransactionId).toBe('aposta-consulta-http');
+    expect(byId.kind).toBe('BET');
+    expect(byId.status).toBe('PROCESSED');
+    expect(byId.money).toEqual({ amount: '10.00', currency: 'BRL' });
+    expect(byId.balance).toEqual({ amount: '90.00', currency: 'BRL' });
+
+    const byProviderResponse = await fetch(
+      `${baseUrl}/providers/provedor-http/wagering/transactions/aposta-consulta-http`,
+    );
+    const byProvider = await byProviderResponse.json() as WagerReadHttpResponse;
+    expect(byProviderResponse.status).toBe(200);
+    expect(byProvider.transactionId).toBe(createdBody.transactionId);
+    expect(byProvider.externalTransactionId).toBe('aposta-consulta-http');
+
+    const wrongProvider = await fetch(
+      `${baseUrl}/providers/outro-provedor/wagering/transactions/aposta-consulta-http`,
+    );
+    const wrongProviderBody = await wrongProvider.json() as WagerReadHttpResponse;
+    expect(wrongProvider.status).toBe(404);
+    expect(wrongProviderBody.code).toBe('TRANSACTION_NOT_FOUND');
+
+    const missing = await fetch(`${baseUrl}/wagering/transactions/${randomUUID()}`);
+    expect(missing.status).toBe(404);
+
+    const invalidId = await fetch(`${baseUrl}/wagering/transactions/id-invalido`);
+    expect(invalidId.status).toBe(400);
   });
 });

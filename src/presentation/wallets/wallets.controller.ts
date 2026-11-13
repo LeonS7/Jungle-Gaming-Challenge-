@@ -1,5 +1,5 @@
 /**
- * Esta página expõe a criação de carteiras com respostas HTTP estáveis.
+ * Esta página expõe criação e consultas de carteira com respostas HTTP estáveis.
  * Assinatura: Leonardo de Souza da Luz
  */
 import {
@@ -10,9 +10,18 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Get,
+  Param,
+  NotFoundException,
   Post,
+  Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { GetWallet, WalletNotFoundError } from '../../application/wallets/get-wallet.js';
+import {
+  GetWalletLedger,
+  InvalidWalletLedgerCursorError,
+} from '../../application/wallets/get-wallet-ledger.js';
 import { OpenWallet } from '../../application/wallets/open-wallet.js';
 import {
   WalletAlreadyExistsError,
@@ -22,6 +31,12 @@ import { PersistenceUnavailableError } from '../../application/shared/persistenc
 import { InvalidMoneyError } from '../../domain/money/money.js';
 import { InvalidWalletError } from '../../domain/wallet/wallet.js';
 import { InvalidOpenWalletRequestError, parseOpenWalletRequest } from './open-wallet.dto.js';
+import {
+  InvalidWalletLedgerQueryError,
+  parseWalletLedgerQuery,
+} from './wallet-ledger-query.dto.js';
+
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 function httpError(status: number, code: string, message: string): HttpException {
   return new HttpException({ statusCode: status, code, message }, status);
@@ -64,7 +79,83 @@ function mapWalletError(error: unknown): HttpException {
 
 @Controller('wallets')
 export class WalletsController {
-  constructor(private readonly openWallet: OpenWallet) {}
+  constructor(
+    private readonly openWallet: OpenWallet,
+    private readonly getWallet: GetWallet,
+    private readonly getWalletLedger: GetWalletLedger,
+  ) {}
+
+  private requireWalletId(walletId: string): string {
+    if (!UUID_PATTERN.test(walletId)) {
+      throw httpError(HttpStatus.BAD_REQUEST, 'INVALID_REQUEST', 'walletId deve ser um UUID válido.');
+    }
+    return walletId;
+  }
+
+  private mapReadError(error: unknown, operation: string): HttpException {
+    if (error instanceof HttpException) {
+      return error;
+    }
+    if (error instanceof WalletNotFoundError) {
+      return new NotFoundException({
+        statusCode: HttpStatus.NOT_FOUND,
+        code: 'WALLET_NOT_FOUND',
+        message: error.message,
+      });
+    }
+    if (
+      error instanceof InvalidWalletLedgerCursorError ||
+      error instanceof InvalidWalletLedgerQueryError ||
+      error instanceof RangeError
+    ) {
+      return httpError(HttpStatus.BAD_REQUEST, 'INVALID_REQUEST', error.message);
+    }
+    if (error instanceof PersistenceUnavailableError) {
+      return new ServiceUnavailableException({
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        code: 'PERSISTENCE_UNAVAILABLE',
+        message: 'O serviço financeiro está temporariamente indisponível.',
+      });
+    }
+
+    Logger.error(
+      `Falha interna ao ${operation} dados da carteira.`,
+      error instanceof Error ? error.stack : undefined,
+      WalletsController.name,
+    );
+    return httpError(
+      HttpStatus.INTERNAL_SERVER_ERROR,
+      'INTERNAL_ERROR',
+      'Ocorreu uma falha interna ao consultar a carteira.',
+    );
+  }
+
+  @Get(':walletId')
+  async findById(@Param('walletId') walletId: string) {
+    try {
+      return await this.getWallet.execute(this.requireWalletId(walletId));
+    } catch (error) {
+      throw this.mapReadError(error, 'consultar');
+    }
+  }
+
+  @Get(':walletId/ledger')
+  async findLedger(
+    @Param('walletId') walletId: string,
+    @Query('cursor') cursor: unknown,
+    @Query('limit') limit: unknown,
+  ) {
+    try {
+      const query = parseWalletLedgerQuery(cursor, limit);
+      return await this.getWalletLedger.execute(
+        this.requireWalletId(walletId),
+        query.cursor,
+        query.limit,
+      );
+    } catch (error) {
+      throw this.mapReadError(error, 'consultar');
+    }
+  }
 
   // Ponto de extensão para anexar autenticação fornecida por um Identity Provider externo.
   @Post()
