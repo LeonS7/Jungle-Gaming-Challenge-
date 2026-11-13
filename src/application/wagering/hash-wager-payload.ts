@@ -14,6 +14,7 @@ export interface WagerPayloadForHash {
   readonly roundId: string;
   readonly gameId: string;
   readonly kind: ProcessableWagerKind;
+  readonly referenceExternalTransactionId?: string;
   readonly money: MoneyProps;
 }
 
@@ -29,6 +30,9 @@ export function hashWagerPayload(payload: WagerPayloadForHash): string {
     },
     playerId: payload.playerId,
     providerId: payload.providerId,
+    ...(payload.referenceExternalTransactionId !== undefined
+      ? { referenceExternalTransactionId: payload.referenceExternalTransactionId }
+      : {}),
     roundId: payload.roundId,
     walletId: payload.walletId,
   });

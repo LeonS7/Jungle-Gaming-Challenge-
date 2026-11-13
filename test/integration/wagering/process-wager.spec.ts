@@ -1,5 +1,5 @@
 /**
- * Esta página valida BET, WIN e LOSS com concorrência e PostgreSQL reais.
+ * Esta página valida operações, reversões e concorrência com PostgreSQL real.
  * Assinatura: Leonardo de Souza da Luz
  */
 import { randomUUID } from 'node:crypto';
@@ -173,7 +173,7 @@ test('BET concorrentes idênticas geram um único débito e repetição idempote
 
     expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
     expect(results.every((result) => result.status === WagerTransactionStatus.Processed)).toBe(true);
-    expect(results.every((result) => result.balance.equals(Money.from({ amount: '90.00', currency: 'BRL' })))).toBe(true);
+    expect(results.every((result) => result.balance?.equals(Money.from({ amount: '90.00', currency: 'BRL' })))).toBe(true);
     expect(walletRows[0]).toEqual({ balance: '90.00', version: 2 });
     expect(betRows).toEqual([{ status: 'PROCESSED', resultBalance: '90.00' }]);
     expect(ledgerRows).toEqual([{ amount: '10.00' }]);
@@ -220,7 +220,7 @@ test('LOSS repetida não altera saldo nem cria lançamento no ledger', async () 
 
     expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
     expect(results.every((result) => result.status === WagerTransactionStatus.Processed)).toBe(true);
-    expect(results.every((result) => result.balance.toJSON().amount === '100.00')).toBe(true);
+    expect(results.every((result) => result.balance?.toJSON().amount === '100.00')).toBe(true);
     expect(walletRows[0]).toEqual({ balance: '100.00', version: 1 });
     expect(lossRows).toEqual([{ status: 'PROCESSED', resultBalance: '100.00' }]);
     expect(lossLedgerRows).toHaveLength(0);
@@ -269,7 +269,7 @@ test('WIN concorrente gera um crédito e uma entrada imutável no ledger', async
 
     expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
     expect(results.every((result) => result.status === WagerTransactionStatus.Processed)).toBe(true);
-    expect(results.every((result) => result.balance.toJSON().amount === '110.00')).toBe(true);
+    expect(results.every((result) => result.balance?.toJSON().amount === '110.00')).toBe(true);
     expect(walletRows[0]).toEqual({ balance: '110.00', version: 2 });
     expect(winRows).toEqual([{ status: 'PROCESSED', resultBalance: '110.00' }]);
     expect(ledgerRows).toEqual([{
@@ -443,8 +443,8 @@ test('a repetição idempotente retorna o saldo histórico e rejeita dados difer
     );
 
     const replay = await processWager.execute(original);
-    expect(firstResult.balance.toJSON().amount).toBe('90.00');
-    expect(replay.balance.toJSON().amount).toBe('90.00');
+    expect(firstResult.balance?.toJSON().amount).toBe('90.00');
+    expect(replay.balance?.toJSON().amount).toBe('90.00');
     expect(replay.transactionId).toBe(firstResult.transactionId);
     expect(replay.idempotentReplay).toBe(true);
     await expect(
@@ -573,7 +573,7 @@ test('débitos concorrentes não deixam o saldo negativo e armazenam a rejeiçã
 
     expect(results.filter((result) => result.status === WagerTransactionStatus.Processed)).toHaveLength(1);
     expect(rejected?.failureCode).toBe('INSUFFICIENT_FUNDS');
-    expect(rejected?.balance.toJSON().amount).toBe('20.00');
+    expect(rejected?.balance?.toJSON().amount).toBe('20.00');
     expect(walletRows[0]).toEqual({ balance: '20.00', version: 2 });
     expect(betRows.filter((row) => row.status === 'PROCESSED')).toHaveLength(1);
     expect(betRows.filter((row) => row.status === 'REJECTED')).toEqual([
@@ -598,6 +598,330 @@ test('débitos concorrentes não deixam o saldo negativo e armazenam a rejeiçã
     );
     const rejectedReplay = await processWager.execute(rejectedCommand);
     expect(rejectedReplay.idempotentReplay).toBe(true);
-    expect(rejectedReplay.balance.toJSON().amount).toBe('20.00');
+    expect(rejectedReplay.balance?.toJSON().amount).toBe('20.00');
+  });
+});
+
+test('REFUND e ROLLBACK aplicam a direção inversa e mantêm o ledger auditável', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const processWager = new ProcessWager(persistence);
+    const bet = createWager(playerId, walletId, {
+      externalTransactionId: 'aposta-reversao-valida',
+      idempotencyKey: 'chave-aposta-reversao-valida',
+      payloadHash: 'hash-aposta-reversao-valida',
+      money: Money.from({ amount: '20.00', currency: 'BRL' }),
+    });
+    const processedBet = await processWager.execute(bet);
+    const refund = createWager(playerId, walletId, {
+      externalTransactionId: 'reembolso-reversao-valida',
+      idempotencyKey: 'chave-reembolso-reversao-valida',
+      payloadHash: 'hash-reembolso-reversao-valida',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: bet.externalTransactionId,
+      money: bet.money,
+    });
+    const processedRefund = await processWager.execute(refund);
+    const rollbackRefund = createWager(playerId, walletId, {
+      externalTransactionId: 'rollback-reembolso-valido',
+      idempotencyKey: 'chave-rollback-reembolso-valido',
+      payloadHash: 'hash-rollback-reembolso-valido',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: refund.externalTransactionId,
+      money: refund.money,
+    });
+    const processedRefundRollback = await processWager.execute(rollbackRefund);
+    const rollbackBet = createWager(playerId, walletId, {
+      externalTransactionId: 'rollback-aposta-valido',
+      idempotencyKey: 'chave-rollback-aposta-valido',
+      payloadHash: 'hash-rollback-aposta-valido',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: bet.externalTransactionId,
+      money: bet.money,
+    });
+    const processedBetRollback = await processWager.execute(rollbackBet);
+
+    expect(processedBet.status).toBe(WagerTransactionStatus.Processed);
+    expect(processedBet.balance?.toJSON().amount).toBe('80.00');
+    expect(processedRefund.status).toBe(WagerTransactionStatus.Processed);
+    expect(processedRefund.balance?.toJSON().amount).toBe('100.00');
+    expect(processedRefundRollback.status).toBe(WagerTransactionStatus.Processed);
+    expect(processedRefundRollback.balance?.toJSON().amount).toBe('80.00');
+    expect(processedBetRollback.status).toBe(WagerTransactionStatus.Processed);
+    expect(processedBetRollback.balance?.toJSON().amount).toBe('100.00');
+
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const referenceRows = await orm.em.getConnection().execute(
+      `select "kind", "reference_transaction_id" as "referenceTransactionId"
+       from ${table(schema, 'wager_transactions')}
+       where "external_transaction_id" in (?, ?, ?)
+       order by "external_transaction_id"`,
+      [
+        refund.externalTransactionId,
+        rollbackRefund.externalTransactionId,
+        rollbackBet.externalTransactionId,
+      ],
+    );
+    const ledgerRows = await orm.em.getConnection().execute(
+      `select wager."kind", ledger."direction",
+              ledger."amount"::text as "amount"
+       from ${table(schema, 'wallet_ledger_entries')} as ledger
+       join ${table(schema, 'wager_transactions')} as wager
+         on wager."id" = ledger."transaction_id"
+       where wager."external_transaction_id" in (?, ?, ?, ?)
+       order by wager."created_at", wager."id"`,
+      [
+        bet.externalTransactionId,
+        refund.externalTransactionId,
+        rollbackRefund.externalTransactionId,
+        rollbackBet.externalTransactionId,
+      ],
+    );
+    const replay = await processWager.execute(refund);
+
+    expect(walletRows).toEqual([{ balance: '100.00', version: 5 }]);
+    expect(referenceRows).toHaveLength(3);
+    expect(ledgerRows).toHaveLength(4);
+    expect(ledgerRows).toEqual(expect.arrayContaining([
+      { kind: 'BET', direction: 'DEBIT', amount: '20.00' },
+      { kind: 'REFUND', direction: 'CREDIT', amount: '20.00' },
+      { kind: 'ROLLBACK', direction: 'DEBIT', amount: '20.00' },
+      { kind: 'ROLLBACK', direction: 'CREDIT', amount: '20.00' },
+    ]));
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.balance?.toJSON().amount).toBe('100.00');
+  });
+});
+
+test('ROLLBACK que deixaria saldo negativo é rejeitado sem lançamento e com código próprio', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const processWager = new ProcessWager(persistence);
+    const win = createWager(playerId, walletId, {
+      externalTransactionId: 'vitoria-a-reverter-sem-saldo',
+      idempotencyKey: 'chave-vitoria-a-reverter-sem-saldo',
+      payloadHash: 'hash-vitoria-a-reverter-sem-saldo',
+      kind: WagerTransactionKind.Win,
+      money: Money.from({ amount: '60.00', currency: 'BRL' }),
+    });
+    await processWager.execute(win);
+    await processWager.execute(createWager(playerId, walletId, {
+      externalTransactionId: 'aposta-que-consome-premio',
+      idempotencyKey: 'chave-aposta-que-consome-premio',
+      payloadHash: 'hash-aposta-que-consome-premio',
+      money: Money.from({ amount: '150.00', currency: 'BRL' }),
+    }));
+    const rollback = createWager(playerId, walletId, {
+      externalTransactionId: 'rollback-sem-saldo',
+      idempotencyKey: 'chave-rollback-sem-saldo',
+      payloadHash: 'hash-rollback-sem-saldo',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: win.externalTransactionId,
+      money: win.money,
+    });
+
+    const result = await processWager.execute(rollback);
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const rollbackRows = await orm.em.getConnection().execute(
+      `select "status", "failure_code" as "failureCode",
+              "result_balance"::text as "resultBalance"
+       from ${table(schema, 'wager_transactions')}
+       where "external_transaction_id" = ?`,
+      [rollback.externalTransactionId],
+    );
+    const ledgerRows = await orm.em.getConnection().execute(
+      `select "id" from ${table(schema, 'wallet_ledger_entries')}
+       where "transaction_id" = ?`,
+      [result.transactionId],
+    );
+
+    expect(result.status).toBe(WagerTransactionStatus.Rejected);
+    expect(result.failureCode).toBe('REVERSAL_INSUFFICIENT_FUNDS');
+    expect(result.balance?.toJSON().amount).toBe('10.00');
+    expect(walletRows).toEqual([{ balance: '10.00', version: 3 }]);
+    expect(rollbackRows).toEqual([{
+      status: 'REJECTED',
+      failureCode: 'REVERSAL_INSUFFICIENT_FUNDS',
+      resultBalance: '10.00',
+    }]);
+    expect(ledgerRows).toHaveLength(0);
+  });
+});
+
+test('referência ausente fica pendente, gera evento e reproduz o mesmo status', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const processWager = new ProcessWager(persistence);
+    const refund = createWager(playerId, walletId, {
+      externalTransactionId: 'reembolso-antes-da-aposta',
+      idempotencyKey: 'chave-reembolso-antes-da-aposta',
+      payloadHash: 'hash-reembolso-antes-da-aposta',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: 'aposta-ainda-nao-recebida',
+      money: Money.from({ amount: '15.00', currency: 'BRL' }),
+    });
+
+    const first = await processWager.execute(refund);
+    const replay = await processWager.execute(refund);
+    const transactionRows = await orm.em.getConnection().execute(
+      `select "status", "reference_transaction_id" as "referenceTransactionId",
+              "result_balance" as "resultBalance"
+       from ${table(schema, 'wager_transactions')} where "id" = ?`,
+      [first.transactionId],
+    );
+    const outboxRows = await orm.em.getConnection().execute(
+      `select "event_type" as "eventType", "sequence_number" as "sequenceNumber"
+       from ${table(schema, 'outbox_messages')} where "transaction_id" = ?`,
+      [first.transactionId],
+    );
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+
+    expect(first.status).toBe(WagerTransactionStatus.PendingReference);
+    expect(first.balance).toBeNull();
+    expect(first.idempotentReplay).toBe(false);
+    expect(replay.status).toBe(WagerTransactionStatus.PendingReference);
+    expect(replay.balance).toBeNull();
+    expect(replay.idempotentReplay).toBe(true);
+    expect(transactionRows).toEqual([{
+      status: 'PENDING_REFERENCE',
+      referenceTransactionId: null,
+      resultBalance: null,
+    }]);
+    expect(outboxRows).toEqual([{
+      eventType: 'WagerTransactionPendingReference',
+      sequenceNumber: 1,
+    }]);
+    expect(walletRows).toEqual([{ balance: '100.00', version: 1 }]);
+  });
+});
+
+test('referência de tipo incorreto é rejeitada e duas reversões concorrentes só aplicam uma', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const processWager = new ProcessWager(persistence);
+    const loss = createWager(playerId, walletId, {
+      externalTransactionId: 'perda-nao-reembolsavel',
+      idempotencyKey: 'chave-perda-nao-reembolsavel',
+      payloadHash: 'hash-perda-nao-reembolsavel',
+      kind: WagerTransactionKind.Loss,
+    });
+    await processWager.execute(loss);
+    const invalidRefund = await processWager.execute(createWager(playerId, walletId, {
+      externalTransactionId: 'reembolso-de-perda-invalido',
+      idempotencyKey: 'chave-reembolso-de-perda-invalido',
+      payloadHash: 'hash-reembolso-de-perda-invalido',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: loss.externalTransactionId,
+    }));
+
+    const bet = createWager(playerId, walletId, {
+      externalTransactionId: 'aposta-com-reembolso-concorrente',
+      idempotencyKey: 'chave-aposta-com-reembolso-concorrente',
+      payloadHash: 'hash-aposta-com-reembolso-concorrente',
+      money: Money.from({ amount: '30.00', currency: 'BRL' }),
+    });
+    await processWager.execute(bet);
+    const refunds = await Promise.all([
+      processWager.execute(createWager(playerId, walletId, {
+        externalTransactionId: 'reembolso-concorrente-a',
+        idempotencyKey: 'chave-reembolso-concorrente-a',
+        payloadHash: 'hash-reembolso-concorrente-a',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: bet.externalTransactionId,
+        money: bet.money,
+      })),
+      processWager.execute(createWager(playerId, walletId, {
+        externalTransactionId: 'reembolso-concorrente-b',
+        idempotencyKey: 'chave-reembolso-concorrente-b',
+        payloadHash: 'hash-reembolso-concorrente-b',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: bet.externalTransactionId,
+        money: bet.money,
+      })),
+    ]);
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const processedRefundLedgers = await orm.em.getConnection().execute(
+      `select ledger."id"
+       from ${table(schema, 'wallet_ledger_entries')} as ledger
+       join ${table(schema, 'wager_transactions')} as wager
+         on wager."id" = ledger."transaction_id"
+       where wager."reference_external_transaction_id" = ?
+         and wager."kind" = 'REFUND'
+         and wager."status" = 'PROCESSED'`,
+      [bet.externalTransactionId],
+    );
+
+    expect(invalidRefund.status).toBe(WagerTransactionStatus.Rejected);
+    expect(invalidRefund.failureCode).toBe('INVALID_REFERENCE');
+    expect(refunds.filter((result) => result.status === WagerTransactionStatus.Processed))
+      .toHaveLength(1);
+    expect(refunds.filter((result) => result.failureCode === 'ALREADY_REVERSED'))
+      .toHaveLength(1);
+    expect(walletRows).toEqual([{ balance: '100.00', version: 3 }]);
+    expect(processedRefundLedgers).toHaveLength(1);
+  });
+});
+
+test('três clientes PostgreSQL independentes não processam duas vezes o mesmo REFUND', async () => {
+  await withPersistence(async ({ orm, schema, playerId, walletId }) => {
+    const config = loadApplicationConfig();
+    const clients = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        MikroORM.init(createMikroOrmOptions(config, schema)),
+      ),
+    );
+    try {
+      const services = clients.map(
+        (client) => new ProcessWager(new PostgresWagerPersistence(client, schema)),
+      );
+      const bet = createWager(playerId, walletId, {
+        externalTransactionId: 'aposta-tres-instancias',
+        idempotencyKey: 'chave-aposta-tres-instancias',
+        payloadHash: 'hash-aposta-tres-instancias',
+        money: Money.from({ amount: '60.00', currency: 'BRL' }),
+      });
+      const firstService = services[0];
+      if (!firstService) {
+        throw new Error('O teste exige ao menos uma instância do caso de uso.');
+      }
+      await firstService.execute(bet);
+      const results = await Promise.all(
+        services.map((service, index) =>
+          service.execute(createWager(playerId, walletId, {
+            externalTransactionId: `reembolso-tres-instancias-${index}`,
+            idempotencyKey: `chave-reembolso-tres-instancias-${index}`,
+            payloadHash: `hash-reembolso-tres-instancias-${index}`,
+            kind: WagerTransactionKind.Refund,
+            referenceExternalTransactionId: bet.externalTransactionId,
+            money: bet.money,
+          })),
+        ),
+      );
+      const walletRows = await orm.em.getConnection().execute(
+        `select "balance"::text as "balance", "version"
+         from ${table(schema, 'wallets')} where "id" = ?`,
+        [walletId],
+      );
+
+      expect(results.filter((result) => result.status === WagerTransactionStatus.Processed))
+        .toHaveLength(1);
+      expect(results.filter((result) => result.failureCode === 'ALREADY_REVERSED'))
+        .toHaveLength(2);
+      expect(walletRows).toEqual([{ balance: '100.00', version: 3 }]);
+    } finally {
+      await Promise.all(clients.map((client) => client.close(true)));
+    }
   });
 });

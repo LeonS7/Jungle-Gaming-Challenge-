@@ -1,5 +1,5 @@
 /**
- * Esta página processa BET, WIN e LOSS com idempotência e saldo observado persistidos.
+ * Esta página processa wagering, referências, reversões e idempotência em transações.
  * Assinatura: Leonardo de Souza da Luz
  */
 import { randomUUID } from 'node:crypto';
@@ -10,12 +10,14 @@ import {
   WalletLedgerEntry,
 } from '../../domain/ledger/wallet-ledger-entry.js';
 import {
+  InvalidWagerTransactionError,
   WagerTransaction,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from '../../domain/wagering/wager-transaction.js';
 import {
   WalletBalanceChanged,
+  WagerTransactionPendingReference,
   WagerTransactionProcessed,
   WagerTransactionRejected,
   type WagerTransactionProcessedData,
@@ -23,13 +25,16 @@ import {
 import type {
   PersistedWagerResult,
   WagerPersistencePort,
+  WagerTransactionSession,
 } from './wager-processing.port.js';
 import { WagerIdentityAlreadyExistsError } from './wager-processing.port.js';
 
 export type ProcessableWagerKind =
   | WagerTransactionKind.Bet
   | WagerTransactionKind.Win
-  | WagerTransactionKind.Loss;
+  | WagerTransactionKind.Loss
+  | WagerTransactionKind.Refund
+  | WagerTransactionKind.Rollback;
 
 export interface ProcessWagerCommand {
   readonly providerId: string;
@@ -42,12 +47,16 @@ export interface ProcessWagerCommand {
   readonly gameId: string;
   readonly kind: ProcessableWagerKind;
   readonly money: Money;
+  readonly referenceExternalTransactionId?: string;
 }
 
 export interface ProcessWagerResult {
   readonly transactionId: string;
-  readonly status: WagerTransactionStatus.Processed | WagerTransactionStatus.Rejected;
-  readonly balance: Money;
+  readonly status:
+    | WagerTransactionStatus.Processed
+    | WagerTransactionStatus.Rejected
+    | WagerTransactionStatus.PendingReference;
+  readonly balance: Money | null;
   readonly idempotentReplay: boolean;
   readonly failureCode?: string;
 }
@@ -145,6 +154,7 @@ export class ProcessWager {
       gameId: command.gameId,
       kind: command.kind,
       money: command.money,
+      referenceExternalTransactionId: command.referenceExternalTransactionId,
       createdAt,
     });
 
@@ -179,11 +189,71 @@ export class ProcessWager {
 
         await session.insertPendingTransaction(transaction);
         const occurredAt = new Date();
-        const direction = transaction.ledgerDirectionFor();
+        let reference: WagerTransaction | undefined;
+
+        if (transaction.referenceExternalTransactionId !== undefined) {
+          if (
+            transaction.referenceExternalTransactionId ===
+            transaction.externalTransactionId
+          ) {
+            return this.reject(
+              session,
+              transaction,
+              wallet,
+              occurredAt,
+              'INVALID_REFERENCE',
+            );
+          }
+
+          const candidate = await session.findReference(
+            transaction.providerId,
+            transaction.referenceExternalTransactionId,
+          );
+          if (
+            !candidate ||
+            candidate.status === WagerTransactionStatus.Pending ||
+            candidate.status === WagerTransactionStatus.PendingReference
+          ) {
+            return this.deferUntilReferenceExists(session, transaction, occurredAt);
+          }
+          reference = candidate;
+        }
+
+        let direction: LedgerDirection | undefined;
+        try {
+          direction = transaction.ledgerDirectionFor(reference);
+        } catch (error) {
+          if (!(error instanceof InvalidWagerTransactionError)) {
+            throw error;
+          }
+          return this.reject(
+            session,
+            transaction,
+            wallet,
+            occurredAt,
+            'INVALID_REFERENCE',
+          );
+        }
+
+        if (
+          reference &&
+          (transaction.kind === WagerTransactionKind.Refund ||
+            transaction.kind === WagerTransactionKind.Rollback) &&
+          await session.hasProcessedReversal(reference.id, transaction.kind)
+        ) {
+          return this.reject(
+            session,
+            transaction,
+            wallet,
+            occurredAt,
+            'ALREADY_REVERSED',
+          );
+        }
+
         let entry: WalletLedgerEntry | undefined;
 
         try {
-          // WIN credita, BET debita e LOSS mantém o saldo observado sem criar lançamento.
+          // A direção vem do domínio; LOSS não movimenta saldo e nem cria lançamento.
           if (transaction.affectsBalance()) {
             if (direction === LedgerDirection.Debit) {
               entry = wallet.debit({
@@ -202,45 +272,38 @@ export class ProcessWager {
             }
           }
         } catch (error) {
-          if (
-            command.kind !== WagerTransactionKind.Bet ||
-            !(error instanceof InsufficientWalletBalanceError)
-          ) {
+          if (!(error instanceof InsufficientWalletBalanceError)) {
             throw error;
           }
-
-          const failureCode = 'INSUFFICIENT_FUNDS';
-          transaction.reject(failureCode);
-          await session.saveTransactionResult(transaction, wallet.balance);
-          const rejectedEvent = WagerTransactionRejected.create({
-            eventId: randomUUID(),
-            aggregateId: transaction.id,
-            correlationId: transaction.id,
-            occurredAt,
-            data: {
-              ...transactionEventData(transaction, wallet.balance),
-              failureCode,
-            },
-          });
-          await session.insertOutboxMessage({
-            transactionId: transaction.id,
-            sequenceNumber: 1,
-            event: rejectedEvent.toJSON(),
-          });
-          return {
-            transactionId: transaction.id,
-            status: WagerTransactionStatus.Rejected,
-            balance: wallet.balance,
-            idempotentReplay: false,
-            failureCode: transaction.failureCode,
-          };
+          if (transaction.kind === WagerTransactionKind.Bet) {
+            return this.reject(
+              session,
+              transaction,
+              wallet,
+              occurredAt,
+              'INSUFFICIENT_FUNDS',
+            );
+          }
+          if (
+            transaction.kind === WagerTransactionKind.Refund ||
+            transaction.kind === WagerTransactionKind.Rollback
+          ) {
+            return this.reject(
+              session,
+              transaction,
+              wallet,
+              occurredAt,
+              'REVERSAL_INSUFFICIENT_FUNDS',
+            );
+          }
+          throw error;
         }
 
         if (entry) {
           await session.saveWallet(wallet);
           await session.insertLedgerEntry(entry);
         }
-        transaction.markProcessed(undefined, occurredAt);
+        transaction.markProcessed(reference?.id, occurredAt);
         await session.saveTransactionResult(transaction, wallet.balance);
         const processedEvent = WagerTransactionProcessed.create({
           eventId: randomUUID(),
@@ -307,12 +370,99 @@ export class ProcessWager {
     }
   }
 
+  private async reject(
+    session: WagerTransactionSession,
+    transaction: WagerTransaction,
+    wallet: Wallet,
+    occurredAt: Date,
+    failureCode: string,
+  ): Promise<ProcessWagerResult> {
+    transaction.reject(failureCode);
+    await session.saveTransactionResult(transaction, wallet.balance);
+    const rejectedEvent = WagerTransactionRejected.create({
+      eventId: randomUUID(),
+      aggregateId: transaction.id,
+      correlationId: transaction.id,
+      occurredAt,
+      data: {
+        ...transactionEventData(transaction, wallet.balance),
+        failureCode,
+      },
+    });
+    await session.insertOutboxMessage({
+      transactionId: transaction.id,
+      sequenceNumber: 1,
+      event: rejectedEvent.toJSON(),
+    });
+    return {
+      transactionId: transaction.id,
+      status: WagerTransactionStatus.Rejected,
+      balance: wallet.balance,
+      idempotentReplay: false,
+      failureCode,
+    };
+  }
+
+  private async deferUntilReferenceExists(
+    session: WagerTransactionSession,
+    transaction: WagerTransaction,
+    occurredAt: Date,
+  ): Promise<ProcessWagerResult> {
+    const referenceExternalTransactionId =
+      transaction.referenceExternalTransactionId;
+    if (!referenceExternalTransactionId) {
+      throw new WagerPersistenceInvariantError(
+        'Uma operação sem referência externa não pode aguardar uma referência.',
+      );
+    }
+
+    transaction.markPendingReference();
+    await session.savePendingReference(transaction);
+    const pendingEvent = WagerTransactionPendingReference.create({
+      eventId: randomUUID(),
+      aggregateId: transaction.id,
+      correlationId: transaction.id,
+      occurredAt,
+      data: {
+        transactionId: transaction.id,
+        providerId: transaction.providerId,
+        externalTransactionId: transaction.externalTransactionId,
+        playerId: transaction.playerId,
+        walletId: transaction.walletId,
+        roundId: transaction.roundId,
+        gameId: transaction.gameId,
+        kind: transaction.kind,
+        money: transaction.money.toJSON(),
+        referenceExternalTransactionId,
+      },
+    });
+    await session.insertOutboxMessage({
+      transactionId: transaction.id,
+      sequenceNumber: 1,
+      event: pendingEvent.toJSON(),
+    });
+    return {
+      transactionId: transaction.id,
+      status: WagerTransactionStatus.PendingReference,
+      balance: null,
+      idempotentReplay: false,
+    };
+  }
+
   private replay(
     existing: PersistedWagerResult,
     payloadHash: string,
   ): ProcessWagerResult {
     if (existing.payloadHash !== payloadHash) {
       throw new IdempotencyConflictError();
+    }
+    if (existing.status === WagerTransactionStatus.PendingReference) {
+      return {
+        transactionId: existing.transactionId,
+        status: WagerTransactionStatus.PendingReference,
+        balance: null,
+        idempotentReplay: true,
+      };
     }
     if (
       existing.status !== WagerTransactionStatus.Processed &&

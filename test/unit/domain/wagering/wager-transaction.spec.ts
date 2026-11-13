@@ -95,6 +95,10 @@ describe('WagerTransaction', () => {
         referenceExternalTransactionId: 'external-1',
       }).requiresReference(),
     ).toBe(true);
+    expect(() => transaction({
+      kind: WagerTransactionKind.Bet,
+      referenceExternalTransactionId: 'unexpected-reference',
+    })).toThrow('não aceitam referenceExternalTransactionId');
   });
 
   test('transiciona transações pendentes e impede mudanças após estados terminais', () => {
@@ -127,9 +131,9 @@ describe('WagerTransaction', () => {
     expect(failed.failureCode).toBe('PERMANENT_PROCESSING_FAILURE');
   });
 
-  test('somente transações que exigem referência podem aguardar uma referência', () => {
+  test('transações sem referência externa não podem aguardar uma referência', () => {
     expect(() => transaction().markPendingReference()).toThrow(
-      'não exigem uma referência',
+      'sem referência externa não podem aguardar',
     );
     const pendingReference = transaction({
       kind: WagerTransactionKind.Rollback,
@@ -138,6 +142,15 @@ describe('WagerTransaction', () => {
     pendingReference.markPendingReference();
     expect(() => pendingReference.markPendingReference()).toThrow(
       InvalidTransactionStateError,
+    );
+
+    const winWaitingForOptionalReference = transaction({
+      kind: WagerTransactionKind.Win,
+      referenceExternalTransactionId: 'bet-1',
+    });
+    winWaitingForOptionalReference.markPendingReference();
+    expect(winWaitingForOptionalReference.status).toBe(
+      WagerTransactionStatus.PendingReference,
     );
   });
 

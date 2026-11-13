@@ -1,5 +1,5 @@
 /**
- * Esta página valida BET, WIN e LOSS por HTTP sem usar number para dinheiro.
+ * Esta página valida operações de wagering por HTTP sem usar number para dinheiro.
  * Assinatura: Leonardo de Souza da Luz
  */
 import { InvalidMoneyError, Money } from '../../domain/money/money.js';
@@ -18,6 +18,7 @@ const REQUEST_FIELDS = [
   'roundId',
   'gameId',
   'kind',
+  'referenceExternalTransactionId',
   'money',
 ] as const;
 
@@ -91,11 +92,29 @@ export function parseSubmitWagerRequest(
   if (
     kind !== WagerTransactionKind.Bet &&
     kind !== WagerTransactionKind.Win &&
-    kind !== WagerTransactionKind.Loss
+    kind !== WagerTransactionKind.Loss &&
+    kind !== WagerTransactionKind.Refund &&
+    kind !== WagerTransactionKind.Rollback
   ) {
     throw new UnsupportedWagerKindError();
   }
   const wagerKind: ProcessableWagerKind = kind;
+  const referenceExternalTransactionId =
+    request.referenceExternalTransactionId === undefined
+      ? undefined
+      : requireText(
+          request.referenceExternalTransactionId,
+          'referenceExternalTransactionId',
+        );
+  if (
+    (wagerKind === WagerTransactionKind.Refund ||
+      wagerKind === WagerTransactionKind.Rollback) &&
+    referenceExternalTransactionId === undefined
+  ) {
+    throw new InvalidWagerRequestError(
+      `Transações ${wagerKind} exigem referenceExternalTransactionId.`,
+    );
+  }
 
   const moneyRequest = requireObject(request.money, 'money');
   rejectUnknownFields(moneyRequest, ['amount', 'currency'], 'money');
@@ -131,6 +150,9 @@ export function parseSubmitWagerRequest(
     gameId,
     kind: wagerKind,
     money: moneyProps,
+    ...(referenceExternalTransactionId !== undefined
+      ? { referenceExternalTransactionId }
+      : {}),
   });
 
   return {
@@ -144,5 +166,8 @@ export function parseSubmitWagerRequest(
     gameId,
     kind: wagerKind,
     money,
+    ...(referenceExternalTransactionId !== undefined
+      ? { referenceExternalTransactionId }
+      : {}),
   };
 }

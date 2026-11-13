@@ -1,5 +1,5 @@
 /**
- * Esta página persiste BET, WIN e LOSS em uma transação MikroORM e bloqueia a carteira usada.
+ * Esta página persiste wagering, referências e reversões em transação PostgreSQL.
  * Assinatura: Leonardo de Souza da Luz
  */
 import { MikroORM, type EntityManager } from '@mikro-orm/postgresql';
@@ -13,6 +13,7 @@ import {
   WagerTransaction,
   WagerTransactionKind,
   WagerTransactionStatus,
+  type WagerTransactionState,
 } from '../../domain/wagering/wager-transaction.js';
 import { WagerPersistenceInvariantError } from '../../application/wagering/process-wager.js';
 import type { OutboxMessageToAppend } from '../../application/outbox/integration-events.js';
@@ -46,6 +47,27 @@ interface WalletRow {
   readonly version: number;
   readonly createdAt: Date | string;
   readonly updatedAt: Date | string;
+}
+
+interface ReferenceWagerRow {
+  readonly id: string;
+  readonly providerId: string;
+  readonly externalTransactionId: string;
+  readonly idempotencyKey: string;
+  readonly payloadHash: string;
+  readonly walletId: string;
+  readonly playerId: string;
+  readonly currency: string;
+  readonly roundId: string;
+  readonly gameId: string;
+  readonly kind: string;
+  readonly amount: string;
+  readonly referenceExternalTransactionId: string | null;
+  readonly referenceTransactionId: string | null;
+  readonly status: string;
+  readonly failureCode: string | null;
+  readonly createdAt: Date | string;
+  readonly processedAt: Date | string | null;
 }
 
 function parseDatabaseDate(value: Date | string): Date {
@@ -120,6 +142,86 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
     });
   }
 
+  async findReference(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransaction | null> {
+    const rows = await this.execute(
+      `select
+        "id",
+        "provider_id" as "providerId",
+        "external_transaction_id" as "externalTransactionId",
+        "idempotency_key" as "idempotencyKey",
+        "payload_hash" as "payloadHash",
+        "wallet_id" as "walletId",
+        "player_id" as "playerId",
+        "currency"::text as "currency",
+        "round_id" as "roundId",
+        "game_id" as "gameId",
+        "kind",
+        "amount"::text as "amount",
+        "reference_external_transaction_id" as "referenceExternalTransactionId",
+        "reference_transaction_id" as "referenceTransactionId",
+        "status",
+        "failure_code" as "failureCode",
+        "created_at" as "createdAt",
+        "processed_at" as "processedAt"
+       from ${qualifiedTable(this.schema, 'wager_transactions')}
+       where "provider_id" = ? and "external_transaction_id" = ?`,
+      [providerId, externalTransactionId],
+    );
+    const row = rows[0] as unknown as ReferenceWagerRow | undefined;
+    if (!row) {
+      return null;
+    }
+
+    const state: WagerTransactionState = {
+      id: row.id,
+      providerId: row.providerId,
+      externalTransactionId: row.externalTransactionId,
+      idempotencyKey: row.idempotencyKey,
+      payloadHash: row.payloadHash,
+      walletId: row.walletId,
+      playerId: row.playerId,
+      roundId: row.roundId,
+      gameId: row.gameId,
+      kind: row.kind as WagerTransactionKind,
+      money: Money.from({
+        amount: row.amount,
+        currency: row.currency.trim(),
+      }),
+      ...(row.referenceExternalTransactionId !== null
+        ? { referenceExternalTransactionId: row.referenceExternalTransactionId }
+        : {}),
+      createdAt: parseDatabaseDate(row.createdAt),
+      status: row.status as WagerTransactionStatus,
+      ...(row.referenceTransactionId !== null
+        ? { referenceTransactionId: row.referenceTransactionId }
+        : {}),
+      ...(row.failureCode !== null ? { failureCode: row.failureCode } : {}),
+      ...(row.processedAt !== null
+        ? { processedAt: parseDatabaseDate(row.processedAt) }
+        : {}),
+    };
+    return WagerTransaction.rehydrate(state);
+  }
+
+  async hasProcessedReversal(
+    referenceTransactionId: string,
+    kind: WagerTransactionKind.Refund | WagerTransactionKind.Rollback,
+  ): Promise<boolean> {
+    const rows = await this.execute(
+      `select "id"
+       from ${qualifiedTable(this.schema, 'wager_transactions')}
+       where "reference_transaction_id" = ?
+         and "kind" = ?
+         and "status" = 'PROCESSED'
+       limit 1`,
+      [referenceTransactionId, kind],
+    );
+    return rows.length > 0;
+  }
+
   async insertPendingTransaction(transaction: WagerTransaction): Promise<void> {
     const money = transaction.money.toJSON();
     try {
@@ -164,6 +266,30 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
       }
 
       throw error;
+    }
+  }
+
+  async savePendingReference(transaction: WagerTransaction): Promise<void> {
+    if (
+      transaction.status !== WagerTransactionStatus.PendingReference ||
+      transaction.referenceTransactionId !== undefined
+    ) {
+      throw new WagerPersistenceInvariantError(
+        'Somente uma transação sem referência resolvida pode aguardar uma referência.',
+      );
+    }
+
+    const updated = await this.execute(
+      `update ${qualifiedTable(this.schema, 'wager_transactions')}
+       set "status" = 'PENDING_REFERENCE'
+       where "id" = ? and "status" = 'PENDING'
+       returning "id"`,
+      [transaction.id],
+    );
+    if (updated.length !== 1) {
+      throw new WagerPersistenceInvariantError(
+        'A transação pendente desapareceu antes de aguardar a referência.',
+      );
     }
   }
 

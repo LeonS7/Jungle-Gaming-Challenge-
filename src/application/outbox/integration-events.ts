@@ -123,6 +123,36 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
   }
 }
 
+export interface WagerTransactionPendingReferenceData {
+  readonly transactionId: string;
+  readonly providerId: string;
+  readonly externalTransactionId: string;
+  readonly playerId: string;
+  readonly walletId: string;
+  readonly roundId: string;
+  readonly gameId: string;
+  readonly kind: WagerTransactionKind;
+  readonly money: MoneyProps;
+  readonly referenceExternalTransactionId: string;
+}
+
+export class WagerTransactionPendingReference extends IntegrationEvent<WagerTransactionPendingReferenceData> {
+  readonly eventType = 'WagerTransactionPendingReference';
+  readonly version = 1;
+
+  private constructor(
+    props: IntegrationEventProps<WagerTransactionPendingReferenceData>,
+  ) {
+    super(props);
+  }
+
+  static create(
+    props: IntegrationEventProps<WagerTransactionPendingReferenceData>,
+  ): WagerTransactionPendingReference {
+    return new WagerTransactionPendingReference(props);
+  }
+}
+
 export interface WalletBalanceChangedData {
   readonly walletId: string;
   readonly transactionId: string;

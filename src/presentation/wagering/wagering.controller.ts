@@ -1,5 +1,5 @@
 /**
- * Esta página expõe BET, WIN e LOSS por HTTP e traduz erros em respostas estáveis.
+ * Esta página expõe operações de wagering por HTTP e traduz erros em respostas estáveis.
  * Assinatura: Leonardo de Souza da Luz
  */
 import {
@@ -13,6 +13,7 @@ import {
   Logger,
   NotFoundException,
   Post,
+  Res,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -28,7 +29,10 @@ import {
 } from '../../application/wagering/process-wager.js';
 import { PersistenceUnavailableError } from '../../application/shared/persistence-unavailable.error.js';
 import { InvalidMoneyError } from '../../domain/money/money.js';
-import { InvalidWagerTransactionError } from '../../domain/wagering/wager-transaction.js';
+import {
+  InvalidWagerTransactionError,
+  WagerTransactionStatus,
+} from '../../domain/wagering/wager-transaction.js';
 import {
   InvalidWagerRequestError,
   parseSubmitWagerRequest,
@@ -104,21 +108,25 @@ export class WageringController {
   async submitWager(
     @Body() body: unknown,
     @Headers('idempotency-key') idempotencyKey: unknown,
+    @Res({ passthrough: true }) response: { statusCode: number },
   ): Promise<{
     transactionId: string;
     status: string;
-    balance: { amount: string; currency: string };
+    balance?: { amount: string; currency: string };
     idempotentReplay: boolean;
     failureCode?: string;
   }> {
     try {
       const command = parseSubmitWagerRequest(body, idempotencyKey);
       const result = await this.processWager.execute(command);
+      if (result.status === WagerTransactionStatus.PendingReference) {
+        response.statusCode = HttpStatus.ACCEPTED;
+      }
       return {
         transactionId: result.transactionId,
         status: result.status,
-        balance: result.balance.toJSON(),
         idempotentReplay: result.idempotentReplay,
+        ...(result.balance ? { balance: result.balance.toJSON() } : {}),
         ...(result.failureCode ? { failureCode: result.failureCode } : {}),
       };
     } catch (error) {

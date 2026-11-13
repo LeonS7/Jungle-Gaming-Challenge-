@@ -261,7 +261,7 @@ test('POST BET processa 50 repetições e devolve resposta idempotente', async (
   });
 });
 
-test('POST WIN credita uma vez e mantém referências fora do escopo atual', async () => {
+test('POST WIN credita uma vez e aguarda uma referência ausente', async () => {
   await withHttpApplication(async ({ baseUrl, orm, schema, playerId, walletId }) => {
     const request = createRequest(playerId, walletId, {
       externalTransactionId: 'vitoria-http-1',
@@ -314,12 +314,114 @@ test('POST WIN credita uma vez e mantém referências fora do escopo atual', asy
       'chave-vitoria-referenciada',
     );
     const referencedWinBody = await referencedWin.json() as HttpResponseBody;
-    expect(referencedWin.status).toBe(400);
-    expect(referencedWinBody.code).toBe('INVALID_REQUEST');
+    expect(referencedWin.status).toBe(202);
+    expect(referencedWinBody.status).toBe('PENDING_REFERENCE');
+    expect(referencedWinBody.balance).toBeUndefined();
+    expect(referencedWinBody.idempotentReplay).toBe(false);
+
+    const repeatedReferencedWin = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'vitoria-http-referenciada',
+        kind: 'WIN',
+        referenceExternalTransactionId: 'aposta-http-1',
+      }),
+      'chave-vitoria-referenciada',
+    );
+    const repeatedReferencedWinBody = await repeatedReferencedWin.json() as HttpResponseBody;
+    expect(repeatedReferencedWin.status).toBe(202);
+    expect(repeatedReferencedWinBody.status).toBe('PENDING_REFERENCE');
+    expect(repeatedReferencedWinBody.idempotentReplay).toBe(true);
+    const changedReference = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'vitoria-http-referenciada',
+        kind: 'WIN',
+        referenceExternalTransactionId: 'outra-aposta-http',
+      }),
+      'chave-vitoria-referenciada',
+    );
+    const changedReferenceBody = await changedReference.json() as HttpResponseBody;
+    expect(changedReference.status).toBe(409);
+    expect(changedReferenceBody.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(await orm.em.getConnection().execute(
+      `select "event_type" as "eventType" from ${table(schema, 'outbox_messages')}
+       where "transaction_id" = ?`,
+      [referencedWinBody.transactionId],
+    )).toEqual([{ eventType: 'WagerTransactionPendingReference' }]);
   });
 });
 
-test('POST BET diferencia entrada inválida e operação ainda não suportada', async () => {
+test('POST processa REFUND e ROLLBACK com referências e respostas finais', async () => {
+  await withHttpApplication(async ({ baseUrl, orm, schema, playerId, walletId }) => {
+    const betResponse = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'aposta-http-para-reembolso',
+        kind: 'BET',
+      }),
+      'chave-aposta-http-para-reembolso',
+    );
+    const betBody = await betResponse.json() as HttpResponseBody;
+
+    const refundResponse = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'reembolso-http',
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'aposta-http-para-reembolso',
+      }),
+      'chave-reembolso-http',
+    );
+    const refundBody = await refundResponse.json() as HttpResponseBody;
+
+    const rollbackResponse = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'rollback-http',
+        kind: 'ROLLBACK',
+        referenceExternalTransactionId: 'reembolso-http',
+      }),
+      'chave-rollback-http',
+    );
+    const rollbackBody = await rollbackResponse.json() as HttpResponseBody;
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const ledgerRows = await orm.em.getConnection().execute(
+      `select ledger."direction", ledger."amount"::text as "amount"
+       from ${table(schema, 'wallet_ledger_entries')} as ledger
+       join ${table(schema, 'wager_transactions')} as wager
+         on wager."id" = ledger."transaction_id"
+       where wager."external_transaction_id" in (?, ?, ?)
+       order by wager."created_at", wager."id"`,
+      [
+        'aposta-http-para-reembolso',
+        'reembolso-http',
+        'rollback-http',
+      ],
+    );
+
+    expect(betResponse.status).toBe(200);
+    expect(betBody.status).toBe('PROCESSED');
+    expect(refundResponse.status).toBe(200);
+    expect(refundBody.status).toBe('PROCESSED');
+    expect(refundBody.balance?.amount).toBe('100.00');
+    expect(rollbackResponse.status).toBe(200);
+    expect(rollbackBody.status).toBe('PROCESSED');
+    expect(rollbackBody.balance?.amount).toBe('90.00');
+    expect(walletRows).toEqual([{ balance: '90.00', version: 4 }]);
+    expect(ledgerRows).toEqual([
+      { direction: 'DEBIT', amount: '10.00' },
+      { direction: 'CREDIT', amount: '10.00' },
+      { direction: 'DEBIT', amount: '10.00' },
+    ]);
+  });
+});
+
+test('POST wagering diferencia entrada inválida e operação interna não suportada', async () => {
   await withHttpApplication(async ({ baseUrl, playerId, walletId }) => {
     const missingKey = await submit(baseUrl, createRequest(playerId, walletId));
     const missingKeyBody = await missingKey.json() as HttpResponseBody;
@@ -346,7 +448,7 @@ test('POST BET diferencia entrada inválida e operação ainda não suportada', 
 
     const unsupportedKind = await submit(
       baseUrl,
-      createRequest(playerId, walletId, { kind: 'REFUND' }),
+      createRequest(playerId, walletId, { kind: 'OPENING' }),
       'chave-nao-suportada',
     );
     const unsupportedKindBody = await unsupportedKind.json() as HttpResponseBody;

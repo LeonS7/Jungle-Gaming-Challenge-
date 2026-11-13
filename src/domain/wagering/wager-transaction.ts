@@ -211,9 +211,12 @@ export class WagerTransaction {
 
   markPendingReference(): void {
     this.assertInFlight('aguardar uma referência');
-    if (!this.requiresReference()) {
+    if (
+      !this.requiresReference() &&
+      this.referenceExternalTransactionId === undefined
+    ) {
       throw new InvalidWagerTransactionError(
-        `Transações ${this.kind} não exigem uma referência.`,
+        `Transações ${this.kind} sem referência externa não podem aguardar uma referência.`,
       );
     }
     if (this._status !== WagerTransactionStatus.Pending) {
@@ -298,6 +301,15 @@ export class WagerTransaction {
 
     if (props.referenceExternalTransactionId !== undefined) {
       requireIdentifier(props.referenceExternalTransactionId, 'referenceExternalTransactionId');
+      if (
+        props.kind !== WagerTransactionKind.Win &&
+        props.kind !== WagerTransactionKind.Refund &&
+        props.kind !== WagerTransactionKind.Rollback
+      ) {
+        throw new InvalidWagerTransactionError(
+          `Transações ${props.kind} não aceitam referenceExternalTransactionId.`,
+        );
+      }
     }
     const requiresReference =
       props.kind === WagerTransactionKind.Refund ||

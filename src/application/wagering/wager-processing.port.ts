@@ -6,6 +6,7 @@ import { Money } from '../../domain/money/money.js';
 import { Wallet } from '../../domain/wallet/wallet.js';
 import {
   WagerTransaction,
+  WagerTransactionKind,
   WagerTransactionStatus,
 } from '../../domain/wagering/wager-transaction.js';
 import { WalletLedgerEntry } from '../../domain/ledger/wallet-ledger-entry.js';
@@ -22,7 +23,16 @@ export interface PersistedWagerResult {
 export interface WagerTransactionSession {
   findByIdempotencyKey(key: string): Promise<PersistedWagerResult | null>;
   findWalletForUpdate(walletId: string): Promise<Wallet | null>;
+  findReference(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransaction | null>;
+  hasProcessedReversal(
+    referenceTransactionId: string,
+    kind: WagerTransactionKind.Refund | WagerTransactionKind.Rollback,
+  ): Promise<boolean>;
   insertPendingTransaction(transaction: WagerTransaction): Promise<void>;
+  savePendingReference(transaction: WagerTransaction): Promise<void>;
   saveWallet(wallet: Wallet): Promise<void>;
   insertLedgerEntry(entry: WalletLedgerEntry): Promise<void>;
   insertOutboxMessage(message: OutboxMessageToAppend): Promise<void>;
