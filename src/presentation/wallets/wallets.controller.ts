@@ -22,6 +22,10 @@ import {
   GetWalletLedger,
   InvalidWalletLedgerCursorError,
 } from '../../application/wallets/get-wallet-ledger.js';
+import {
+  GetWalletTransactions,
+  InvalidWalletTransactionsCursorError,
+} from '../../application/wallets/get-wallet-transactions.js';
 import { OpenWallet } from '../../application/wallets/open-wallet.js';
 import { ReconcileWallet } from '../../application/wallets/reconcile-wallet.js';
 import {
@@ -36,6 +40,10 @@ import {
   InvalidWalletLedgerQueryError,
   parseWalletLedgerQuery,
 } from './wallet-ledger-query.dto.js';
+import {
+  InvalidWalletTransactionsQueryError,
+  parseWalletTransactionsQuery,
+} from './wallet-transactions-query.dto.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
@@ -88,6 +96,7 @@ export class WalletsController {
     private readonly openWallet: OpenWallet,
     private readonly getWallet: GetWallet,
     private readonly getWalletLedger: GetWalletLedger,
+    private readonly getWalletTransactions: GetWalletTransactions,
     private readonly reconcileWallet: ReconcileWallet,
   ) {}
 
@@ -115,7 +124,9 @@ export class WalletsController {
     }
     if (
       error instanceof InvalidWalletLedgerCursorError ||
+      error instanceof InvalidWalletTransactionsCursorError ||
       error instanceof InvalidWalletLedgerQueryError ||
+      error instanceof InvalidWalletTransactionsQueryError ||
       error instanceof RangeError
     ) {
       return httpError(HttpStatus.BAD_REQUEST, 'INVALID_REQUEST', error.message);
@@ -167,6 +178,24 @@ export class WalletsController {
       );
     } catch (error) {
       throw this.mapReadError(error, 'consultar', walletId);
+    }
+  }
+
+  @Get(':walletId/transactions')
+  async findTransactions(
+    @Param('walletId') walletId: string,
+    @Query('cursor') cursor: unknown,
+    @Query('limit') limit: unknown,
+  ) {
+    try {
+      const query = parseWalletTransactionsQuery(cursor, limit);
+      return await this.getWalletTransactions.execute(
+        this.requireWalletId(walletId),
+        query.cursor,
+        query.limit,
+      );
+    } catch (error) {
+      throw this.mapReadError(error, 'consultar histórico', walletId);
     }
   }
 

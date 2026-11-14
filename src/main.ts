@@ -13,7 +13,7 @@ async function bootstrap(): Promise<void> {
     AppModule.register(config, config.postgres.schema),
   );
   app.enableShutdownHooks();
-  await app.listen(config.appPort);
+  await app.listen(config.appPort, '127.0.0.1');
 }
 
 void bootstrap();

@@ -11,6 +11,7 @@ import { GetWagerTransaction } from './application/wagering/get-wager-transactio
 import { OpenWallet } from './application/wallets/open-wallet.js';
 import { GetWallet } from './application/wallets/get-wallet.js';
 import { GetWalletLedger } from './application/wallets/get-wallet-ledger.js';
+import { GetWalletTransactions } from './application/wallets/get-wallet-transactions.js';
 import { ReconcileWallet } from './application/wallets/reconcile-wallet.js';
 import type { ApplicationConfig } from './config/application-config.js';
 import { APPLICATION_CONFIG } from './config/config.constants.js';
@@ -87,6 +88,15 @@ export class AppModule {
           inject: [MikroORM],
           useFactory: (orm: MikroORM) =>
             new GetWalletLedger(new PostgresWalletRead(orm, schema)),
+        },
+        {
+          provide: GetWalletTransactions,
+          inject: [MikroORM],
+          useFactory: (orm: MikroORM) =>
+            new GetWalletTransactions(
+              new PostgresWalletRead(orm, schema),
+              new PostgresWagerRead(orm, schema),
+            ),
         },
         {
           provide: ReconcileWallet,

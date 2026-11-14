@@ -25,7 +25,7 @@ bun run start
 
 Para reverter a última migration localmente, use `bun run db:migrate:down`. Essa operação remove as tabelas criadas pela migration e seus dados; não a execute em um banco com dados que precisem ser preservados.
 
-A aplicação escuta em `http://localhost:3000` por padrão. Os endpoints de health são:
+A aplicação escuta somente em `http://127.0.0.1:3000` por padrão. Os endpoints de health são:
 
 - `GET /health/live`: confirma que o processo responde.
 - `GET /health/ready`: confirma que PostgreSQL e a fila SQS estão acessíveis.
@@ -57,10 +57,11 @@ A rota ainda não tem autenticação. A decisão e o ponto de extensão para um 
 
 - `GET /wallets/:walletId` retorna `id`, `playerId`, `balance` e `version` da carteira. Carteira inexistente responde `404`.
 - `GET /wallets/:walletId/ledger?cursor=...&limit=50` retorna lançamentos do mais recente para o mais antigo. O limite padrão é 50 e o máximo é 100. `nextCursor` é opaco e deve ser enviado sem alterações na próxima página; ele é vinculado à carteira e usa a data completa e o ID do lançamento para manter a paginação estável.
+- `GET /wallets/:walletId/transactions?cursor=...&limit=50` retorna o histórico persistido de transações da carteira, do mais recente para o mais antigo. O limite padrão é 50 e o máximo é 100. `nextCursor` é opaco, vinculado à carteira e permite continuar a consulta após atualizar ou fechar o navegador. A operação é somente leitura e não expõe a chave de idempotência nem o hash interno do payload.
 - `GET /wagering/transactions/:transactionId` consulta pelo ID interno da transação.
 - `GET /providers/:providerId/wagering/transactions/:externalTransactionId` consulta pela identidade externa do provedor.
 
-As consultas retornam valores monetários como strings com duas casas decimais. As respostas de transação não expõem a chave de idempotência nem o hash interno do payload.
+As consultas retornam valores monetários como strings com duas casas decimais. O contrato da consulta paginada está em `docs/openapi.yaml`. As respostas de transação não expõem a chave de idempotência nem o hash interno do payload.
 
 `POST /wallets/:walletId/reconciliation` compara o saldo gravado com a reconstrução `créditos - débitos` do ledger imutável. A resposta contém os dois saldos, a diferença (`saldo gravado - saldo calculado`), `consistent` e `checkedEntries`. Divergências são registradas em log sem valores financeiros e incrementam `wallet_reconciliation_divergences_total`; o endpoint `GET /metrics` expõe o contador em formato Prometheus. A reconciliação não corrige dados automaticamente.
 
@@ -107,6 +108,8 @@ bun run dev
 
 Abra `http://127.0.0.1:5173`. A raiz da API em `http://127.0.0.1:3000` também redireciona o navegador para essa interface. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`; para alterar o destino do redirecionamento, configure `WEB_PANEL_URL` no `.env` da aplicação.
 
-Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. Operações de gravação pedem confirmação no navegador. O simulador permite repetir exatamente a última solicitação com a mesma chave e testar o conflito usando a mesma chave com conteúdo alterado; a garantia vem do armazenamento persistente da API, não do estado do navegador. O simulador de concorrência com várias instâncias não faz parte desta tela ainda. O painel não tem autenticação e deve ser usado somente em ambiente local/de demonstração; não o exponha publicamente. Uma implantação estática precisará de proxy reverso para a API ou configuração de CORS apropriada.
+Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. Operações de gravação pedem confirmação no navegador. O simulador permite repetir exatamente a última solicitação com a mesma chave e testar o conflito usando a mesma chave com conteúdo alterado; a garantia vem do armazenamento persistente da API, não do estado do navegador. O simulador de concorrência com várias instâncias não faz parte desta tela ainda.
+
+API, painel e portas publicadas pelo Docker Compose ficam vinculados ao loopback (`127.0.0.1`). Não há autenticação por usuário: outros processos executados na mesma máquina podem chamar a API. Essa fronteira atende à demonstração local, mas não protege uma implantação em rede; não altere os vínculos para interfaces públicas nem exponha o serviço sem integrar autenticação respaldada por um provedor de identidade e controles de rede apropriados.
 
 Verificações do backend: `bun run check`, `bun run build`, `bun test --timeout=60000` e `bun run test:integration`. A suíte requer PostgreSQL e LocalStack SQS acessíveis e cobre migrations, constraints, concorrência, idempotência, eventos, reversões, inbox, redelivery, DLQ e rollback financeiro.

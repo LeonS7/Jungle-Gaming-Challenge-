@@ -56,6 +56,24 @@ interface WagerReadHttpResponse {
   readonly code?: string;
 }
 
+interface WalletTransactionsHttpResponse {
+  readonly items?: readonly {
+    readonly transactionId: string;
+    readonly externalTransactionId: string;
+    readonly walletId: string;
+    readonly kind: string;
+    readonly money: { readonly amount: string; readonly currency: string };
+    readonly status: string;
+    readonly balance: { readonly amount: string; readonly currency: string } | null;
+    readonly createdAt: string;
+    readonly processedAt: string | null;
+    readonly idempotencyKey?: string;
+    readonly payloadHash?: string;
+  }[];
+  readonly nextCursor?: string | null;
+  readonly code?: string;
+}
+
 interface WalletReconciliationHttpResponse {
   readonly walletId?: string;
   readonly storedBalance?: { readonly amount: string; readonly currency: string };
@@ -580,6 +598,48 @@ test('POST LOSS registra o resultado sem alterar saldo ou ledger', async () => {
   });
 });
 
+test('POST LOSS aceita o valor da BET original sem novo movimento financeiro', async () => {
+  await withHttpApplication(async ({ baseUrl, orm, schema, playerId, walletId }) => {
+    const betResponse = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'aposta-antes-da-perda',
+        money: { amount: '25.00', currency: 'BRL' },
+      }),
+      'chave-aposta-antes-da-perda',
+    );
+    const bet = await betResponse.json() as HttpResponseBody;
+    expect(betResponse.status).toBe(200);
+    expect(bet.status).toBe('PROCESSED');
+    expect(bet.balance?.amount).toBe('75.00');
+
+    const lossResponse = await submit(
+      baseUrl,
+      createRequest(playerId, walletId, {
+        externalTransactionId: 'perda-com-valor-da-aposta',
+        kind: 'LOSS',
+        money: { amount: '25.00', currency: 'BRL' },
+      }),
+      'chave-perda-com-valor-da-aposta',
+    );
+    const loss = await lossResponse.json() as HttpResponseBody;
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version" from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const lossLedgerRows = await orm.em.getConnection().execute(
+      `select "id" from ${table(schema, 'wallet_ledger_entries')} where "transaction_id" = ?`,
+      [loss.transactionId],
+    );
+
+    expect(lossResponse.status).toBe(200);
+    expect(loss.status).toBe('PROCESSED');
+    expect(loss.balance?.amount).toBe('75.00');
+    expect(walletRows).toEqual([{ balance: '75.00', version: 2 }]);
+    expect(lossLedgerRows).toHaveLength(0);
+  });
+});
+
 test('POST wallets grava OPENING e crédito no ledger atomicamente', async () => {
   await withHttpApplication(async ({ baseUrl, orm, schema }) => {
     const playerId = randomUUID();
@@ -928,6 +988,119 @@ test('GET wallet ledger pagina por cursor opaco sem repetir lançamentos', async
       `${baseUrl}/wallets/${randomUUID()}/ledger`,
     );
     expect(missingWalletLedger.status).toBe(404);
+  });
+});
+
+test('GET wallet transactions recupera histórico persistido por páginas estáveis', async () => {
+  await withHttpApplication(async ({ baseUrl, orm, schema, playerId, walletId }) => {
+    const createdTransactionIds: string[] = [];
+    for (const [index, amount] of ['3.00', '4.00', '5.00'].entries()) {
+      const response = await submit(
+        baseUrl,
+        createRequest(playerId, walletId, {
+          externalTransactionId: `historico-pagina-${index}`,
+          money: { amount, currency: 'BRL' },
+        }),
+        `chave-historico-pagina-${index}`,
+      );
+      const body = await response.json() as HttpResponseBody;
+      expect(response.status).toBe(200);
+      expect(body.transactionId).toBeDefined();
+      createdTransactionIds.push(body.transactionId ?? '');
+    }
+
+    const walletBefore = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version" from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const ledgerBefore = await orm.em.getConnection().execute(
+      `select count(*)::text as "count" from ${table(schema, 'wallet_ledger_entries')} where "wallet_id" = ?`,
+      [walletId],
+    );
+    const transactionsBefore = await orm.em.getConnection().execute(
+      `select count(*)::text as "count" from ${table(schema, 'wager_transactions')} where "wallet_id" = ?`,
+      [walletId],
+    );
+    const outboxBefore = await orm.em.getConnection().execute(
+      `select count(*)::text as "count" from ${table(schema, 'outbox_messages')}`,
+    );
+
+    const firstResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/transactions?limit=2`,
+    );
+    const firstPage = await firstResponse.json() as WalletTransactionsHttpResponse;
+    expect(firstResponse.status).toBe(200);
+    expect(firstPage.items).toHaveLength(2);
+    expect(firstPage.nextCursor).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(firstPage.items?.[0]?.money.amount).toMatch(/^\d+\.\d{2}$/);
+    expect(firstPage.items?.[0]?.transactionId).not.toBe(
+      firstPage.items?.[1]?.transactionId,
+    );
+    expect(firstPage.items?.[0]?.idempotencyKey).toBeUndefined();
+    expect(firstPage.items?.[0]?.payloadHash).toBeUndefined();
+
+    const secondResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/transactions?limit=2&cursor=${encodeURIComponent(firstPage.nextCursor ?? '')}`,
+    );
+    const secondPage = await secondResponse.json() as WalletTransactionsHttpResponse;
+    expect(secondResponse.status).toBe(200);
+    expect(secondPage.items).toHaveLength(2);
+    expect(secondPage.nextCursor).toBeNull();
+
+    const listedIds = [
+      ...(firstPage.items ?? []).map((transaction) => transaction.transactionId),
+      ...(secondPage.items ?? []).map((transaction) => transaction.transactionId),
+    ];
+    expect(new Set(listedIds).size).toBe(4);
+    expect(createdTransactionIds.every((id) => listedIds.includes(id))).toBe(true);
+    const openingRows = await orm.em.getConnection().execute(
+      `select "id" as "id" from ${table(schema, 'wager_transactions')} where "kind" = 'OPENING'`,
+    ) as { id: string }[];
+    expect(openingRows).toHaveLength(1);
+    const openingTransactionId = openingRows[0]?.id;
+    if (openingTransactionId === undefined) {
+      throw new Error('A fixture de teste deve conter a transação OPENING.');
+    }
+    expect(listedIds).toContain(openingTransactionId);
+
+    const otherWalletResponse = await createWallet(baseUrl, {
+      playerId: `jogador-${randomUUID()}`,
+      initialBalance: { amount: '0.00', currency: 'BRL' },
+    });
+    const otherWallet = await otherWalletResponse.json() as HttpResponseBody;
+    const wrongWalletCursorResponse = await fetch(
+      `${baseUrl}/wallets/${otherWallet.id}/transactions?cursor=${encodeURIComponent(firstPage.nextCursor ?? '')}`,
+    );
+    expect(wrongWalletCursorResponse.status).toBe(400);
+
+    const invalidCursorResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/transactions?cursor=cursor-invalido`,
+    );
+    expect(invalidCursorResponse.status).toBe(400);
+    const invalidLimitResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/transactions?limit=101`,
+    );
+    expect(invalidLimitResponse.status).toBe(400);
+    const missingWalletResponse = await fetch(
+      `${baseUrl}/wallets/${randomUUID()}/transactions`,
+    );
+    expect(missingWalletResponse.status).toBe(404);
+
+    expect(await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version" from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    )).toEqual(walletBefore);
+    expect(await orm.em.getConnection().execute(
+      `select count(*)::text as "count" from ${table(schema, 'wallet_ledger_entries')} where "wallet_id" = ?`,
+      [walletId],
+    )).toEqual(ledgerBefore);
+    expect(await orm.em.getConnection().execute(
+      `select count(*)::text as "count" from ${table(schema, 'wager_transactions')} where "wallet_id" = ?`,
+      [walletId],
+    )).toEqual(transactionsBefore);
+    expect(await orm.em.getConnection().execute(
+      `select count(*)::text as "count" from ${table(schema, 'outbox_messages')}`,
+    )).toEqual(outboxBefore);
   });
 });
 

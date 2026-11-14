@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-jungle}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-local-only}
     ports:
-      - "${POSTGRES_PUBLISH_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PUBLISH_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +28,7 @@ services:
       SERVICES: sqs
       AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
     ports:
-      - "4566:4566"
+      - "127.0.0.1:4566:4566"
     volumes:
       - ./docker/localstack/init:/etc/localstack/init/ready.d:ro
     healthcheck:

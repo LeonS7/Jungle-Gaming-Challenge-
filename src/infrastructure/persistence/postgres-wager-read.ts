@@ -7,7 +7,9 @@ import { Money } from '../../domain/money/money.js';
 import { PersistenceUnavailableError } from '../../application/shared/persistence-unavailable.error.js';
 import type {
   WagerReadPort,
+  WagerTransactionPosition,
   WagerTransactionReadModel,
+  WagerTransactionSlice,
 } from '../../application/wagering/wager-read.port.js';
 import { isTransientPostgreSqlFailure } from './postgres-errors.js';
 
@@ -30,6 +32,10 @@ interface WagerDatabaseRow {
   readonly resultCurrency: string | null;
   readonly createdAt: Date | string;
   readonly processedAt: Date | string | null;
+}
+
+interface WagerListDatabaseRow extends WagerDatabaseRow {
+  readonly cursorCreatedAt: string;
 }
 
 function qualifiedTable(schema: string | undefined, table: string): string {
@@ -102,6 +108,75 @@ export class PostgresWagerRead implements WagerReadPort {
       `where "provider_id" = ? and "external_transaction_id" = ?`,
       [providerId, externalTransactionId],
     );
+  }
+
+  async findByWalletId(
+    walletId: string,
+    before: WagerTransactionPosition | undefined,
+    limit: number,
+  ): Promise<WagerTransactionSlice> {
+    const entityManager = this.orm.em.fork();
+    try {
+      const cursorFilter = before
+        ? `and ("created_at", "id") < (?::timestamptz, ?::uuid)`
+        : '';
+      const parameters: unknown[] = [walletId];
+      if (before) {
+        parameters.push(before.createdAt, before.transactionId);
+      }
+      parameters.push(limit + 1);
+
+      const rows = await entityManager.getConnection().execute(
+        `select
+          "id" as "transactionId",
+          "provider_id" as "providerId",
+          "external_transaction_id" as "externalTransactionId",
+          "player_id" as "playerId",
+          "wallet_id" as "walletId",
+          "round_id" as "roundId",
+          "game_id" as "gameId",
+          "kind",
+          "amount"::text as "amount",
+          "currency"::text as "currency",
+          "reference_external_transaction_id" as "referenceExternalTransactionId",
+          "reference_transaction_id" as "referenceTransactionId",
+          "status",
+          "failure_code" as "failureCode",
+          "result_balance"::text as "resultBalance",
+          "result_currency"::text as "resultCurrency",
+          "created_at" as "createdAt",
+          "processed_at" as "processedAt",
+          to_char("created_at" at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorCreatedAt"
+         from ${qualifiedTable(this.schema, 'wager_transactions')}
+         where "wallet_id" = ?
+         ${cursorFilter}
+         order by "created_at" desc, "id" desc
+         limit ?`,
+        parameters,
+        'all',
+      );
+      const databaseRows = rows as unknown as WagerListDatabaseRow[];
+      const hasMore = databaseRows.length > limit;
+      const pageRows = databaseRows.slice(0, limit);
+      const lastRow = pageRows.at(-1);
+      return {
+        rows: pageRows.map(toReadModel),
+        hasMore,
+        lastPosition: lastRow
+          ? {
+              createdAt: lastRow.cursorCreatedAt,
+              transactionId: lastRow.transactionId,
+            }
+          : null,
+      };
+    } catch (error) {
+      if (isTransientPostgreSqlFailure(error)) {
+        throw new PersistenceUnavailableError();
+      }
+      throw error;
+    } finally {
+      entityManager.clear();
+    }
   }
 
   private async findOne(

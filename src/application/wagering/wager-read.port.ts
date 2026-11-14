@@ -23,10 +23,26 @@ export interface WagerTransactionReadModel {
   readonly processedAt: string | null;
 }
 
+export interface WagerTransactionPosition {
+  readonly createdAt: string;
+  readonly transactionId: string;
+}
+
+export interface WagerTransactionSlice {
+  readonly rows: readonly WagerTransactionReadModel[];
+  readonly hasMore: boolean;
+  readonly lastPosition: WagerTransactionPosition | null;
+}
+
 export interface WagerReadPort {
   findById(transactionId: string): Promise<WagerTransactionReadModel | null>;
   findByProviderExternalId(
     providerId: string,
     externalTransactionId: string,
   ): Promise<WagerTransactionReadModel | null>;
+  findByWalletId(
+    walletId: string,
+    before: WagerTransactionPosition | undefined,
+    limit: number,
+  ): Promise<WagerTransactionSlice>;
 }
