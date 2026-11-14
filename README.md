@@ -92,9 +92,9 @@ Os logs estruturados dos caminhos HTTP, SQS e workers registram contexto de corr
 
 O teste distribuído cria três processos Bun independentes e um schema PostgreSQL temporário isolado. Ele envia 50 solicitações idênticas pelas três instâncias, verifica um único débito e saldo igual à soma do ledger, encerra os processos, inicia novas instâncias e verifica a recuperação de uma referência pendente e a ordem dos eventos da outbox. Esse cenário valida concorrência e recuperação em execução local; não é um teste de carga nem mede limites de throughput.
 
-## Painel web local — Fase 10.1
+## Painel web local — Fase 10
 
-Esta primeira entrega contém um painel somente de leitura para saúde da aplicação, PostgreSQL, SQS e métricas disponíveis no backend. Ele não mostra total de carteiras ou volume financeiro porque a API ainda não oferece esses indicadores. As métricas exibidas pertencem ao processo consultado e não representam um agregado de todas as réplicas.
+O painel oferece uma visão de saúde e uma área funcional para simular a jornada de um jogador. Nela é possível abrir e consultar carteiras, consultar páginas do ledger, reconciliar o saldo, enviar BET/WIN/LOSS/REFUND/ROLLBACK e consultar transações pelo ID interno ou pela identidade externa do provedor. Todas as gravações são enviadas à API NestJS e persistidas no PostgreSQL; a interface não calcula saldos nem implementa regras financeiras.
 
 Com backend, PostgreSQL e LocalStack em execução, abra outro terminal PowerShell:
 
@@ -105,8 +105,8 @@ bun install
 bun run dev
 ```
 
-Abra `http://127.0.0.1:5173`. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`.
+Abra `http://127.0.0.1:5173`. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`. A API em `http://127.0.0.1:3000` não serve uma página HTML: acessar sua raiz `/` responde 404 `Cannot GET /`, enquanto a interface é servida pelo Vite na porta 5173.
 
-Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. A versão atual ainda não oferece telas de carteira, simulador, idempotência, concorrência ou reconciliação. O painel não tem autenticação e deve ser usado somente em ambiente local/de demonstração; não o exponha publicamente. Uma implantação estática precisará de proxy reverso para a API ou configuração de CORS apropriada.
+Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. Operações de gravação pedem confirmação no navegador. O simulador permite repetir exatamente a última solicitação com a mesma chave e testar o conflito usando a mesma chave com conteúdo alterado; a garantia vem do armazenamento persistente da API, não do estado do navegador. O simulador de concorrência com várias instâncias não faz parte desta tela ainda. O painel não tem autenticação e deve ser usado somente em ambiente local/de demonstração; não o exponha publicamente. Uma implantação estática precisará de proxy reverso para a API ou configuração de CORS apropriada.
 
 Verificações do backend: `bun run check`, `bun run build`, `bun test --timeout=60000` e `bun run test:integration`. A suíte requer PostgreSQL e LocalStack SQS acessíveis e cobre migrations, constraints, concorrência, idempotência, eventos, reversões, inbox, redelivery, DLQ e rollback financeiro.

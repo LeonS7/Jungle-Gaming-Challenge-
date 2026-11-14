@@ -1,6 +1,9 @@
 <!-- Esta página apresenta saúde e métricas locais da API. Assinatura: Leonardo de Souza da Luz -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import WalletWorkspace from './features/wallets/WalletWorkspace.vue';
+import WageringWorkspace from './features/wagering/WageringWorkspace.vue';
+import type { WalletView } from './api/wagering-api';
 import {
   loadDashboardSnapshot,
   type DashboardSnapshot,
@@ -11,6 +14,8 @@ const REFRESH_INTERVAL_MILLISECONDS = 15_000;
 const snapshot = ref<DashboardSnapshot | null>(null);
 const loading = ref(false);
 const pageError = ref<string | null>(null);
+const activeSection = ref<'overview' | 'operations'>('overview');
+const selectedWallet = ref<WalletView | null>(null);
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 const healthCards = computed(() => {
@@ -93,10 +98,14 @@ onUnmounted(() => {
 
       <div class="rail-caption">PAINEL LOCAL</div>
       <nav>
-        <a class="nav-item nav-item-active" href="#visao-geral" aria-current="page">
+        <button class="nav-item" :class="{ 'nav-item-active': activeSection === 'overview' }" type="button" :aria-current="activeSection === 'overview' ? 'page' : undefined" @click="activeSection = 'overview'">
           <span class="nav-icon" aria-hidden="true">◫</span>
           <span>Visão geral</span>
-        </a>
+        </button>
+        <button class="nav-item" :class="{ 'nav-item-active': activeSection === 'operations' }" type="button" :aria-current="activeSection === 'operations' ? 'page' : undefined" @click="activeSection = 'operations'">
+          <span class="nav-icon" aria-hidden="true">↗</span>
+          <span>Testar como jogador</span>
+        </button>
       </nav>
 
       <div class="rail-footer">
@@ -107,7 +116,7 @@ onUnmounted(() => {
 
     <main id="inicio" class="main-area">
       <header class="topbar">
-        <div class="breadcrumb">Jungle Gaming <span>/</span> Operações</div>
+        <div class="breadcrumb">Jungle Gaming <span>/</span> {{ activeSection === 'overview' ? 'Visão geral' : 'Área do jogador' }}</div>
         <div class="topbar-actions">
           <span class="environment-badge"><span></span> LOCAL</span>
           <button
@@ -122,10 +131,10 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <div id="visao-geral" class="content-area">
+      <div id="visao-geral" class="content-area" v-show="activeSection === 'overview'">
         <section class="page-heading">
           <div>
-            <p class="eyebrow">CENTRO DE OPERAÇÕES <span>•</span> SOMENTE LEITURA</p>
+            <p class="eyebrow">CENTRO DE OPERAÇÕES <span>•</span> AMBIENTE LOCAL</p>
             <h1>Visão geral</h1>
             <p class="page-description">
               Saúde do processador e atividade registrada nesta instância da API.
@@ -227,7 +236,28 @@ onUnmounted(() => {
 
         <footer class="page-footer">
           <span class="footer-lock" aria-hidden="true">◈</span>
-          Esta tela é somente leitura. Indicadores são locais à instância consultada e reiniciam com o processo.
+          Os indicadores são locais à instância consultada e reiniciam com o processo.
+        </footer>
+      </div>
+
+      <div class="content-area operations-area" v-show="activeSection === 'operations'">
+        <section class="page-heading">
+          <div>
+            <p class="eyebrow">AMBIENTE LOCAL <span>•</span> OPERAÇÕES REAIS</p>
+            <h1>Testar como jogador</h1>
+            <p class="page-description">Use as telas para criar carteiras, executar operações e consultar os resultados persistidos pela API.</p>
+          </div>
+          <div class="updated-at"><span class="updated-dot" aria-hidden="true"></span> API local em {{ selectedWallet ? 'uso' : 'espera' }}</div>
+        </section>
+        <section class="operation-screen" aria-label="Carteiras">
+          <WalletWorkspace :wallet="selectedWallet" @wallet-selected="selectedWallet = $event" />
+        </section>
+        <section class="operation-screen operation-screen-spaced" aria-label="Wagering">
+          <WageringWorkspace :wallet="selectedWallet" @wallet-refreshed="selectedWallet = $event" />
+        </section>
+        <footer class="page-footer operations-footer">
+          <span class="footer-lock" aria-hidden="true">!</span>
+          As ações gravam dados locais. Não existe botão de exclusão: lançamentos do ledger são imutáveis.
         </footer>
       </div>
     </main>

@@ -139,12 +139,14 @@ O consumidor de entrada e o publisher da outbox estão implementados; a Fase 6 c
 ## Painel web local
 
 - O frontend fica em `web/` como pacote Bun independente, com Vue 3, TypeScript strict e Vite. Não compartilha dependências nem configurações de build com o backend NestJS.
-- A primeira entrega tem somente um painel de leitura. O cliente HTTP consulta `/health/live`, `/health/ready` e `/metrics`; não acessa PostgreSQL, SQS nem LocalStack diretamente.
-- O servidor de desenvolvimento encaminha `/api/*` para o endereço `VITE_API_PROXY_TARGET` (padrão `http://127.0.0.1:3000`) e remove o prefixo `/api`. `VITE_API_BASE_URL` define o prefixo usado pelo cliente, padrão `/api`. Isso evita CORS no desenvolvimento local; publicação estática requer um proxy reverso ou política CORS deliberada.
-- A página mostra liveness, readiness de PostgreSQL/SQS e contadores de transação, DLQ e outbox que existem no endpoint de métricas. Os valores são locais ao processo que respondeu e podem zerar no reinício; não são agregados entre réplicas.
-- Não há endpoint para total de carteiras nem definição de volume financeiro, então esses indicadores não são exibidos. Também não há telas de operação nesta entrega. O painel não altera dados, não implementa regras financeiras e não possui autenticação; deve permanecer limitado ao ambiente local/de demonstração.
-- Não foi adicionada biblioteca visual. Os componentes semânticos e estilos responsivos próprios mantêm dependências reduzidas; o frontend usa uma paleta e tipografia do sistema sem baixar fontes ou ativos de terceiros.
-- Os testes iniciais cobrem a leitura das séries Prometheus fixas e inválidas. O build Vite e a checagem `vue-tsc` verificam os componentes e o contrato estático; a integração visual com a API exige backend e serviços locais ativos.
+- A visão geral consulta `/health/live`, `/health/ready` e `/metrics`; a área de jogador envia comandos e consultas por HTTP. O navegador não acessa PostgreSQL, SQS nem LocalStack diretamente.
+- O servidor de desenvolvimento encaminha `/api/*` para `VITE_API_PROXY_TARGET` (padrão `http://127.0.0.1:3000`) e remove o prefixo `/api`. `VITE_API_BASE_URL` define o prefixo usado pelo cliente, padrão `/api`. Isso evita CORS no desenvolvimento local; publicação estática requer proxy reverso ou política CORS deliberada. A raiz `/` da API na porta 3000 não serve a interface e retorna 404; a interface local é servida pelo Vite na porta 5173.
+- A área de jogador cria e consulta carteira, consulta ledger paginado, executa reconciliação sem reparar dados, envia BET/WIN/LOSS/REFUND/ROLLBACK e consulta transações pelo ID interno ou pela identidade externa do provedor. Toda decisão financeira permanece no backend.
+- Valores monetários ficam como strings decimais de duas casas até serem enviados à API. A interface não converte dinheiro para `number` nem calcula saldo. Operações de gravação pedem confirmação do navegador.
+- O simulador preserva no estado da interface a última requisição e a chave usada para oferecer repetição idêntica ou envio alterado com a mesma chave. Isso exercita a idempotência persistida no PostgreSQL; o estado do navegador não é garantia de idempotência. O botão para concorrência distribuída não está incluído nesta fatia.
+- A visão geral mostra liveness, readiness de PostgreSQL/SQS e métricas locais ao processo consultado; elas podem zerar no reinício e não são agregadas entre réplicas. Não há endpoint para total de carteiras nem definição de volume financeiro, então esses indicadores não são inventados.
+- O painel não tem autenticação e deve permanecer limitado ao ambiente local/de demonstração. Não foi adicionada biblioteca visual; componentes semânticos e estilos próprios mantêm as dependências reduzidas.
+- Os testes do frontend cobrem o parser das métricas e os contratos do cliente HTTP, inclusive string monetária, cabeçalho de idempotência, conflito HTTP e cursor opaco. Build e `vue-tsc` verificam a composição e os tipos; testar operações financeiras exige API, PostgreSQL e LocalStack ativos.
 
 ## Verificação
 
