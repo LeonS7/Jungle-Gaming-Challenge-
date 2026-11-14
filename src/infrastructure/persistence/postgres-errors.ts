@@ -39,6 +39,7 @@ export function isTransientPostgreSqlFailure(error: unknown): boolean {
   return (
     code.startsWith('08') ||
     code.startsWith('40') ||
+    code === '55P03' ||
     code === '53300' ||
     code === '57P01' ||
     code === '57P02' ||

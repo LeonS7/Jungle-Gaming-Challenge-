@@ -20,6 +20,7 @@ import { loadApplicationConfig } from '../../../src/config/application-config.js
 import { createMikroOrmOptions } from '../../../src/infrastructure/persistence/mikro-orm.options.js';
 import { PostgresWagerPersistence } from '../../../src/infrastructure/persistence/postgres-wager-persistence.js';
 import { WagerSqsConsumer } from '../../../src/infrastructure/messaging/wager-sqs-consumer.js';
+import { WageringMetrics } from '../../../src/infrastructure/observability/wagering-metrics.js';
 
 function table(schema: string, name: string): string {
   return `"${schema}"."${name}"`;
@@ -125,6 +126,7 @@ test('consumidor SQS usa inbox, espera commit, confirma redelivery e envia paylo
   let sourceQueueUrl: string | undefined;
   let deadLetterQueueUrl: string | undefined;
   let consumer: WagerSqsConsumer | undefined;
+  const metrics = new WageringMetrics();
 
   try {
     await administrator.em.getConnection().execute(`create schema "${schema}"`);
@@ -166,7 +168,11 @@ test('consumidor SQS usa inbox, espera commit, confirma redelivery e envia paylo
 
     consumer = new WagerSqsConsumer(
       config,
-      new ProcessWager(new PostgresWagerPersistence(orm, schema)),
+      new ProcessWager(
+        new PostgresWagerPersistence(orm, schema, metrics),
+        metrics,
+      ),
+      metrics,
     );
     consumer.onModuleInit();
 
@@ -390,6 +396,11 @@ test('consumidor SQS usa inbox, espera commit, confirma redelivery e envia paylo
       return attributes.Attributes?.ApproximateNumberOfMessages === '2';
     }, 'duas mensagens inválidas iguais na DLQ');
 
+    await waitFor(
+      async () => metrics.renderPrometheus().includes('sqs_dlq_visible_messages 2'),
+      'métrica de mensagens visíveis na DLQ',
+    );
+
     const deadLetterMessage = await sqs.send(new ReceiveMessageCommand({
       QueueUrl: deadLetterQueueUrl,
       MaxNumberOfMessages: 10,
@@ -405,6 +416,10 @@ test('consumidor SQS usa inbox, espera commit, confirma redelivery e envia paylo
         ReceiptHandle: item.ReceiptHandle,
       }));
     }
+    const metricOutput = metrics.renderPrometheus();
+    expect(metricOutput).toContain('wagering_duplicates_total{source="inbox"} 1');
+    expect(metricOutput).toContain('wagering_retries_total{source="sqs"} ');
+    expect(metricOutput).toContain('wagering_transactions_total{status="PROCESSED"} 2');
   } finally {
     if (consumer) {
       await consumer.onModuleDestroy();

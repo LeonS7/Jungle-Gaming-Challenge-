@@ -43,7 +43,10 @@ function httpError(status: number, code: string, message: string): HttpException
   return new HttpException({ statusCode: status, code, message }, status);
 }
 
-function mapWalletError(error: unknown): HttpException {
+function mapWalletError(
+  error: unknown,
+  context: Readonly<Record<string, string>> = {},
+): HttpException {
   if (
     error instanceof InvalidOpenWalletRequestError ||
     error instanceof InvalidMoneyError ||
@@ -66,11 +69,12 @@ function mapWalletError(error: unknown): HttpException {
     });
   }
 
-  Logger.error(
-    'Falha interna ao criar uma carteira.',
-    error instanceof Error ? error.stack : undefined,
-    WalletsController.name,
-  );
+  Logger.error(JSON.stringify({
+    event: 'wallet.http.open_failed',
+    ...context,
+    statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+    errorName: error instanceof Error ? error.name : 'Erro desconhecido',
+  }), WalletsController.name);
   const message =
     error instanceof WalletPersistenceInvariantError
       ? 'Não foi possível persistir um conjunto consistente de abertura.'
@@ -94,7 +98,11 @@ export class WalletsController {
     return walletId;
   }
 
-  private mapReadError(error: unknown, operation: string): HttpException {
+  private mapReadError(
+    error: unknown,
+    operation: string,
+    walletId: string,
+  ): HttpException {
     if (error instanceof HttpException) {
       return error;
     }
@@ -120,11 +128,14 @@ export class WalletsController {
       });
     }
 
-    Logger.error(
-      `Falha interna ao ${operation} dados da carteira.`,
-      error instanceof Error ? error.stack : undefined,
-      WalletsController.name,
-    );
+    Logger.error(JSON.stringify({
+      event: 'wallet.http.query_failed',
+      correlationId: walletId,
+      walletId,
+      operation,
+      statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+      errorName: error instanceof Error ? error.name : 'Erro desconhecido',
+    }), WalletsController.name);
     return httpError(
       HttpStatus.INTERNAL_SERVER_ERROR,
       'INTERNAL_ERROR',
@@ -137,7 +148,7 @@ export class WalletsController {
     try {
       return await this.getWallet.execute(this.requireWalletId(walletId));
     } catch (error) {
-      throw this.mapReadError(error, 'consultar');
+      throw this.mapReadError(error, 'consultar', walletId);
     }
   }
 
@@ -155,7 +166,7 @@ export class WalletsController {
         query.limit,
       );
     } catch (error) {
-      throw this.mapReadError(error, 'consultar');
+      throw this.mapReadError(error, 'consultar', walletId);
     }
   }
 
@@ -169,13 +180,14 @@ export class WalletsController {
       if (!result.consistent) {
         Logger.warn(JSON.stringify({
           event: 'wallet.reconciliation.divergence',
+          correlationId: result.walletId,
           walletId: result.walletId,
           checkedEntries: result.checkedEntries,
         }), WalletsController.name);
       }
       return result;
     } catch (error) {
-      throw this.mapReadError(error, 'reconciliar');
+      throw this.mapReadError(error, 'reconciliar', walletId);
     }
   }
 
@@ -190,9 +202,20 @@ export class WalletsController {
     balance: { amount: string; currency: string };
     version: number;
   }> {
+    let context: { readonly correlationId: string; readonly playerId: string } | undefined;
     try {
       const command = parseOpenWalletRequest(body);
+      context = {
+        correlationId: command.playerId,
+        playerId: command.playerId,
+      };
       const wallet = await this.openWallet.execute(command);
+      Logger.log(JSON.stringify({
+        event: 'wallet.http.opened',
+        correlationId: wallet.id,
+        walletId: wallet.id,
+        playerId: wallet.playerId,
+      }), WalletsController.name);
       return {
         id: wallet.id,
         playerId: wallet.playerId,
@@ -200,7 +223,7 @@ export class WalletsController {
         version: wallet.version,
       };
     } catch (error) {
-      throw mapWalletError(error);
+      throw mapWalletError(error, context);
     }
   }
 }

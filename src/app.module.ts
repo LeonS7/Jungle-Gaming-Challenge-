@@ -33,6 +33,7 @@ import { PostgresWalletReconciliation } from './infrastructure/persistence/postg
 import { WalletReconciliationMetrics } from './infrastructure/observability/wallet-reconciliation-metrics.js';
 import { MetricsController } from './presentation/observability/metrics.controller.js';
 import { PendingReferenceWorker } from './infrastructure/messaging/pending-reference-worker.js';
+import { WageringMetrics } from './infrastructure/observability/wagering-metrics.js';
 
 @Module({})
 export class AppModule {
@@ -57,11 +58,15 @@ export class AppModule {
         { provide: APPLICATION_CONFIG, useValue: config },
         HealthService,
         WalletReconciliationMetrics,
+        WageringMetrics,
         {
           provide: ProcessWager,
-          inject: [MikroORM],
-          useFactory: (orm: MikroORM) =>
-            new ProcessWager(new PostgresWagerPersistence(orm, schema)),
+          inject: [MikroORM, WageringMetrics],
+          useFactory: (orm: MikroORM, metrics: WageringMetrics) =>
+            new ProcessWager(
+              new PostgresWagerPersistence(orm, schema, metrics),
+              metrics,
+            ),
         },
         {
           provide: GetWagerTransaction,
@@ -94,9 +99,12 @@ export class AppModule {
         },
         {
           provide: OpenWallet,
-          inject: [MikroORM],
-          useFactory: (orm: MikroORM) =>
-            new OpenWallet(new PostgresWalletOpeningPersistence(orm, schema)),
+          inject: [MikroORM, WageringMetrics],
+          useFactory: (orm: MikroORM, metrics: WageringMetrics) =>
+            new OpenWallet(
+              new PostgresWalletOpeningPersistence(orm, schema),
+              metrics,
+            ),
         },
         ...(enableBackgroundWorkers
           ? [
@@ -109,11 +117,16 @@ export class AppModule {
               SqsOutboxEventPublisher,
               {
                 provide: PublishOutboxMessages,
-                inject: [PostgresOutboxPublishing, SqsOutboxEventPublisher],
+                inject: [
+                  PostgresOutboxPublishing,
+                  SqsOutboxEventPublisher,
+                  WageringMetrics,
+                ],
                 useFactory: (
                   persistence: PostgresOutboxPublishing,
                   publisher: SqsOutboxEventPublisher,
-                ) => new PublishOutboxMessages(persistence, publisher),
+                  metrics: WageringMetrics,
+                ) => new PublishOutboxMessages(persistence, publisher, metrics),
               },
               WagerSqsConsumer,
               OutboxPublisherWorker,

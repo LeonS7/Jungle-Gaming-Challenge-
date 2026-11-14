@@ -85,11 +85,6 @@ function mapWageringError(error: unknown): HttpException {
     return httpError(HttpStatus.CONFLICT, 'TRANSACTION_IN_PROGRESS', error.message);
   }
 
-  Logger.error(
-    'Falha interna ao submeter uma transação de wagering.',
-    error instanceof Error ? error.stack : undefined,
-    WageringController.name,
-  );
   const message =
     error instanceof IdempotencyReplayUnavailableError ||
     error instanceof WagerPersistenceInvariantError
@@ -116,12 +111,31 @@ export class WageringController {
     idempotentReplay: boolean;
     failureCode?: string;
   }> {
+    let context: {
+      readonly correlationId: string;
+      readonly providerId: string;
+      readonly walletId: string;
+    } | undefined;
     try {
       const command = parseSubmitWagerRequest(body, idempotencyKey);
+      context = {
+        correlationId: command.externalTransactionId,
+        providerId: command.providerId,
+        walletId: command.walletId,
+      };
       const result = await this.processWager.execute(command);
       if (result.status === WagerTransactionStatus.PendingReference) {
         response.statusCode = HttpStatus.ACCEPTED;
       }
+      Logger.log(JSON.stringify({
+        event: 'wager.http.transaction_completed',
+        correlationId: result.transactionId,
+        transactionId: result.transactionId,
+        providerId: command.providerId,
+        walletId: command.walletId,
+        status: result.status,
+        idempotentReplay: result.idempotentReplay,
+      }), WageringController.name);
       return {
         transactionId: result.transactionId,
         status: result.status,
@@ -130,7 +144,16 @@ export class WageringController {
         ...(result.failureCode ? { failureCode: result.failureCode } : {}),
       };
     } catch (error) {
-      throw mapWageringError(error);
+      const responseError = mapWageringError(error);
+      if (responseError.getStatus() >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        Logger.error(JSON.stringify({
+          event: 'wager.http.transaction_failed',
+          ...context,
+          statusCode: responseError.getStatus(),
+          errorName: error instanceof Error ? error.name : 'Erro desconhecido',
+        }), WageringController.name);
+      }
+      throw responseError;
     }
   }
 }

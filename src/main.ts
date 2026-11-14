@@ -9,7 +9,9 @@ import { AppModule } from './app.module.js';
 
 async function bootstrap(): Promise<void> {
   const config = loadApplicationConfig();
-  const app = await NestFactory.create(AppModule.register(config));
+  const app = await NestFactory.create(
+    AppModule.register(config, config.postgres.schema),
+  );
   app.enableShutdownHooks();
   await app.listen(config.appPort);
 }

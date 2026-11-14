@@ -24,7 +24,10 @@ function httpError(status: number, code: string, message: string): HttpException
   return new HttpException({ statusCode: status, code, message }, status);
 }
 
-function mapReadError(error: unknown): HttpException {
+function mapReadError(
+  error: unknown,
+  context: Readonly<Record<string, string>>,
+): HttpException {
   if (error instanceof WagerTransactionNotFoundError) {
     return new NotFoundException({
       statusCode: HttpStatus.NOT_FOUND,
@@ -40,11 +43,12 @@ function mapReadError(error: unknown): HttpException {
     });
   }
 
-  Logger.error(
-    'Falha interna ao consultar uma transação de wagering.',
-    error instanceof Error ? error.stack : undefined,
-    WageringQueriesController.name,
-  );
+  Logger.error(JSON.stringify({
+    event: 'wager.http.transaction_query_failed',
+    ...context,
+    statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+    errorName: error instanceof Error ? error.name : 'Erro desconhecido',
+  }), WageringQueriesController.name);
   return httpError(
     HttpStatus.INTERNAL_SERVER_ERROR,
     'INTERNAL_ERROR',
@@ -69,7 +73,10 @@ export class WageringQueriesController {
     try {
       return await this.getWagerTransaction.byId(transactionId);
     } catch (error) {
-      throw mapReadError(error);
+      throw mapReadError(error, {
+        correlationId: transactionId,
+        transactionId,
+      });
     }
   }
 
@@ -84,7 +91,10 @@ export class WageringQueriesController {
         externalTransactionId,
       );
     } catch (error) {
-      throw mapReadError(error);
+      throw mapReadError(error, {
+        correlationId: externalTransactionId,
+        providerId,
+      });
     }
   }
 }

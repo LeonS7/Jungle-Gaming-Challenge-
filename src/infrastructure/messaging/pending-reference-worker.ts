@@ -36,6 +36,17 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
         const result = await this.processWager.executeDuePendingReferences(
           REFERENCE_BATCH_SIZE,
         );
+        for (const outcome of result.outcomes) {
+          this.logger.log(JSON.stringify({
+            event: 'wager.reference_operation_completed',
+            correlationId: outcome.transactionId,
+            transactionId: outcome.transactionId,
+            providerId: outcome.providerId,
+            walletId: outcome.walletId,
+            status: outcome.status,
+            action: outcome.action,
+          }));
+        }
         if (result.claimed === 0) {
           await this.wait(EMPTY_QUEUE_POLL_MILLISECONDS);
         } else {

@@ -20,6 +20,7 @@ export interface OutboxEventToPublish {
 }
 
 export interface OutboxPublishingPersistencePort {
+  getOutboxLagSeconds(): Promise<number>;
   claimDueMessages(
     limit: number,
     leaseSeconds: number,

@@ -62,4 +62,15 @@ describe('carregamento da configuração da aplicação', () => {
       'AWS_ENDPOINT deve ser uma URL HTTP ou HTTPS válida.',
     );
   });
+
+  test('permite selecionar um schema isolado e valida seu identificador', () => {
+    expect(loadApplicationConfig({
+      ...validEnvironment,
+      DATABASE_SCHEMA: 'teste_instancias_1',
+    }).postgres.schema).toBe('teste_instancias_1');
+    expect(() => loadApplicationConfig({
+      ...validEnvironment,
+      DATABASE_SCHEMA: 'schema-invalido',
+    })).toThrow('DATABASE_SCHEMA deve começar com letra ou sublinhado');
+  });
 });

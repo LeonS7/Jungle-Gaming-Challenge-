@@ -31,6 +31,10 @@ import {
   type PendingReferenceWorkItem,
 } from '../../application/wagering/wager-processing.port.js';
 import { PersistenceUnavailableError } from '../../application/shared/persistence-unavailable.error.js';
+import type {
+  LockConflictType,
+  OperationalMetricsPort,
+} from '../../application/observability/operational-metrics.port.js';
 import {
   isTransientPostgreSqlFailure,
   readPostgreSqlErrorMetadata,
@@ -105,10 +109,25 @@ function qualifiedTable(schema: string | undefined, table: string): string {
   return `"${schema}"."${table}"`;
 }
 
+function lockConflictType(error: unknown): LockConflictType | undefined {
+  const code = readPostgreSqlErrorMetadata(error).code;
+  if (code === '40P01') {
+    return 'deadlock';
+  }
+  if (code === '40001') {
+    return 'serialization';
+  }
+  if (code === '55P03') {
+    return 'lock_not_available';
+  }
+  return undefined;
+}
+
 class PostgresWagerTransactionSession implements WagerTransactionSession {
   constructor(
     private readonly entityManager: EntityManager,
     private readonly schema?: string,
+    private readonly metrics?: OperationalMetricsPort,
   ) {}
 
   private execute(query: string, params: unknown[] = []) {
@@ -188,7 +207,10 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
   }
 
   async findWalletForUpdate(walletId: string): Promise<Wallet | null> {
-    const rows = await this.execute(
+    const startedAt = performance.now();
+    let rows: unknown[];
+    try {
+      rows = await this.execute(
       `select
         "id",
         "player_id" as "playerId",
@@ -200,8 +222,13 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
        from ${qualifiedTable(this.schema, 'wallets')}
        where "id" = ?
        for update`,
-      [walletId],
-    );
+        [walletId],
+      );
+    } finally {
+      this.metrics?.recordWalletLockWait(
+        (performance.now() - startedAt) / 1000,
+      );
+    }
     const row = rows[0] as unknown as WalletRow | undefined;
     if (!row) {
       return null;
@@ -610,6 +637,7 @@ export class PostgresWagerPersistence implements WagerPersistencePort {
   constructor(
     private readonly orm: MikroORM,
     private readonly schema?: string,
+    private readonly metrics?: OperationalMetricsPort,
   ) {}
 
   async transaction<T>(
@@ -618,9 +646,17 @@ export class PostgresWagerPersistence implements WagerPersistencePort {
     const entityManager = this.orm.em.fork();
     try {
       return await entityManager.transactional((transactionalManager) =>
-        operation(new PostgresWagerTransactionSession(transactionalManager, this.schema)),
+        operation(new PostgresWagerTransactionSession(
+          transactionalManager,
+          this.schema,
+          this.metrics,
+        )),
       );
     } catch (error) {
+      const conflictType = lockConflictType(error);
+      if (conflictType) {
+        this.metrics?.recordLockConflict(conflictType);
+      }
       if (isTransientPostgreSqlFailure(error)) {
         throw new PersistenceUnavailableError();
       }
@@ -636,6 +672,7 @@ export class PostgresWagerPersistence implements WagerPersistencePort {
       return await new PostgresWagerTransactionSession(
         entityManager,
         this.schema,
+        this.metrics,
       ).findByIdempotencyKey(key);
     } catch (error) {
       if (isTransientPostgreSqlFailure(error)) {

@@ -5,6 +5,7 @@
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
@@ -34,6 +35,7 @@ import { PersistenceUnavailableError } from '../../application/shared/persistenc
 import type { ApplicationConfig } from '../../config/application-config.js';
 import { APPLICATION_CONFIG } from '../../config/config.constants.js';
 import { parseWagerQueueMessage } from './wager-message-parser.js';
+import { WageringMetrics } from '../observability/wagering-metrics.js';
 
 const VISIBILITY_TIMEOUT_SECONDS = 45;
 const VISIBILITY_HEARTBEAT_MILLISECONDS = 15_000;
@@ -76,10 +78,13 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
   private queueUrls: QueueUrls | undefined;
   private loop: Promise<void> | undefined;
   private stopping = false;
+  private lastDlqMetricAt = 0;
+  private dlqMetricsInterval: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     @Inject(APPLICATION_CONFIG) private readonly config: ApplicationConfig,
     private readonly processWager: ProcessWager,
+    private readonly metrics: WageringMetrics,
   ) {
     this.client = new SQSClient({
       region: config.sqs.region,
@@ -98,6 +103,9 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
     this.abortController.abort();
+    if (this.dlqMetricsInterval) {
+      clearInterval(this.dlqMetricsInterval);
+    }
     await this.loop;
     this.client.destroy();
   }
@@ -117,6 +125,10 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
     if (!queueUrls || this.stopping) {
       return;
     }
+    await this.refreshDeadLetterGauge(queueUrls.deadLetter);
+    this.dlqMetricsInterval = setInterval(() => {
+      void this.refreshDeadLetterGauge(queueUrls.deadLetter);
+    }, 10_000);
 
     while (!this.stopping) {
       try {
@@ -133,6 +145,9 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
         const message = response.Messages?.[0];
         if (message) {
           await this.handleMessage(message);
+        }
+        if (Date.now() - this.lastDlqMetricAt >= 10_000) {
+          await this.refreshDeadLetterGauge(queueUrls.deadLetter);
         }
       } catch (error) {
         if (this.stopping && this.abortController.signal.aborted) {
@@ -166,39 +181,65 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
     const heartbeat = setInterval(() => {
       void this.extendVisibility(message.ReceiptHandle!);
     }, VISIBILITY_HEARTBEAT_MILLISECONDS);
+    const context = {
+      correlationId: parsed.identity.messageId,
+      messageId: parsed.identity.messageId,
+      providerId: parsed.command.providerId,
+      walletId: parsed.command.walletId,
+    };
 
     try {
       const result = await this.processWager.executeFromInbox(
         parsed.command,
         parsed.identity,
       );
+      const completeContext = {
+        ...context,
+        correlationId: result.result?.transactionId ?? context.correlationId,
+        transactionId: result.result?.transactionId,
+      };
       await this.deleteMessage(message.ReceiptHandle);
       logStructured(this.logger, 'log', 'sqs.consumer.message_committed', {
+        ...completeContext,
         consumerName: parsed.identity.consumerName,
-        messageId: parsed.identity.messageId,
-        transactionId: result.result?.transactionId,
         duplicate: result.duplicate,
         status: result.result?.status,
       });
     } catch (error) {
       if (error instanceof InboxMessagePayloadConflictError) {
-        await this.moveToDeadLetterQueue(message, error.name);
+        await this.moveToDeadLetterQueue(message, error.name, context);
       } else if (isTerminalBusinessError(error)) {
         try {
           await this.processWager.recordTerminalInboxMessage(parsed.identity);
           await this.deleteMessage(message.ReceiptHandle);
           logStructured(this.logger, 'warn', 'sqs.consumer.business_error_acknowledged', {
-            messageId: parsed.identity.messageId,
+            ...context,
             errorName: error instanceof Error ? error.name : 'Erro desconhecido',
           });
         } catch (terminalError) {
-          await this.retryLater(message, terminalError);
+          await this.retryLater(message, terminalError, context);
         }
       } else {
-        await this.retryLater(message, error);
+        await this.retryLater(message, error, context);
       }
     } finally {
       clearInterval(heartbeat);
+    }
+  }
+
+  private async refreshDeadLetterGauge(queueUrl: string): Promise<void> {
+    try {
+      const response = await this.client.send(new GetQueueAttributesCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: ['ApproximateNumberOfMessages'],
+      }));
+      const count = Number(response.Attributes?.ApproximateNumberOfMessages ?? '0');
+      this.metrics.setDeadLetterVisibleMessages(count);
+      this.lastDlqMetricAt = Date.now();
+    } catch (error) {
+      logStructured(this.logger, 'warn', 'sqs.consumer.dlq_metric_failed', {
+        errorName: error instanceof Error ? error.name : 'Erro desconhecido',
+      });
     }
   }
 
@@ -242,18 +283,25 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async retryLater(message: Message, error: unknown): Promise<void> {
+  private async retryLater(
+    message: Message,
+    error: unknown,
+    context?: Record<string, string>,
+  ): Promise<void> {
     if (!message.ReceiptHandle || !this.queueUrls) {
       return;
     }
     const attempt = receiveCount(message);
     const delay = Math.min(2 ** (attempt - 1), MAX_RETRY_VISIBILITY_SECONDS);
+    let retryScheduled = false;
     try {
       await this.client.send(new ChangeMessageVisibilityCommand({
         QueueUrl: this.queueUrls.source,
         ReceiptHandle: message.ReceiptHandle,
         VisibilityTimeout: delay,
       }));
+      retryScheduled = true;
+      this.metrics.recordRetry('sqs');
     } catch (visibilityError) {
       logStructured(this.logger, 'warn', 'sqs.consumer.retry_visibility_failed', {
         messageId: message.MessageId,
@@ -263,15 +311,21 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
       });
     }
     logStructured(this.logger, 'error', 'sqs.consumer.message_retry_scheduled', {
+      ...context,
       messageId: message.MessageId,
       attempt,
       delaySeconds: delay,
+      retryScheduled,
       errorName: error instanceof Error ? error.name : 'Erro desconhecido',
       transientPersistenceFailure: error instanceof PersistenceUnavailableError,
     });
   }
 
-  private async moveToDeadLetterQueue(message: Message, reason: string): Promise<void> {
+  private async moveToDeadLetterQueue(
+    message: Message,
+    reason: string,
+    context?: Record<string, string>,
+  ): Promise<void> {
     if (!this.queueUrls || !message.Body || !message.ReceiptHandle) {
       return;
     }
@@ -286,12 +340,15 @@ export class WagerSqsConsumer implements OnModuleInit, OnModuleDestroy {
         MessageDeduplicationId: deduplicationId,
       }));
       await this.deleteMessage(message.ReceiptHandle);
+      await this.refreshDeadLetterGauge(this.queueUrls.deadLetter);
       logStructured(this.logger, 'error', 'sqs.consumer.message_sent_to_dlq', {
+        ...context,
+        correlationId: context?.correlationId ?? message.MessageId,
         messageId: message.MessageId,
         reason,
       });
     } catch (error) {
-      await this.retryLater(message, error);
+      await this.retryLater(message, error, context);
     }
   }
 

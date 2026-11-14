@@ -12,7 +12,10 @@ async function runMigrations(): Promise<void> {
     throw new Error('Informe "up" para aplicar ou "down" para reverter a migration.');
   }
 
-  const orm = await MikroORM.init(createMikroOrmOptions(loadApplicationConfig()));
+  const config = loadApplicationConfig();
+  const orm = await MikroORM.init(
+    createMikroOrmOptions(config, config.postgres.schema),
+  );
   try {
     if (direction === 'up') {
       await orm.migrator.up();

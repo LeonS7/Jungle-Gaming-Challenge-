@@ -61,9 +61,9 @@ A aplicação não inicia migrations automaticamente. A execução é explícita
 - A linha de outbox é inserida pela mesma sessão MikroORM e pelo mesmo contexto SQL da transação financeira. Se a inserção da outbox falhar, PostgreSQL reverte carteira, ledger, transação e qualquer evento daquela operação. O publisher lê somente linhas cujo commit já terminou.
 - Para saldo insuficiente, a transação termina como rejeitada e armazena o saldo observado. A carteira e o ledger não mudam. A repetição idempotente de uma rejeição também retorna o saldo daquele momento, mesmo se o saldo atual tiver mudado depois.
 - A chave de idempotência tem unicidade global no PostgreSQL. Colisões entre carteiras distintas são resolvidas pela constraint do banco; após rollback, o caso de uso carrega o resultado persistido e compara o hash dos dados recebidos.
-- Testes com PostgreSQL real cobrem chamadas concorrentes idênticas, duas apostas disputando saldo, corrida da chave global entre carteiras, reversões concorrentes e três clientes PostgreSQL independentes tentando a mesma reversão, referências inválidas e pendentes, eventos, abertura de carteira, imutabilidade da outbox, falha induzida no ledger e na outbox com rollback financeiro e reversão/reaplicação das migrations. Três clientes independentes não constituem um ensaio com três processos da aplicação.
+- Testes com PostgreSQL real cobrem chamadas concorrentes idênticas, duas apostas disputando saldo, corrida da chave global entre carteiras, reversões concorrentes e três clientes PostgreSQL independentes tentando a mesma reversão, referências inválidas e pendentes, eventos, abertura de carteira, imutabilidade da outbox, falha induzida no ledger e na outbox com rollback financeiro e reversão/reaplicação das migrations. Um teste ponta a ponta separado inicia três processos Bun independentes para validar idempotência distribuída e recuperação após reinício.
 
-Esses mecanismos são compartilhados entre instâncias porque estado e arbitragem ficam no PostgreSQL; ainda não foi executado ensaio ponta a ponta com três processos da aplicação. A inbox protege a entrada e o publisher da outbox encaminha eventos confirmados ao SQS com lease e retry persistidos.
+Esses mecanismos são compartilhados entre instâncias porque estado e arbitragem ficam no PostgreSQL. A inbox protege a entrada e o publisher da outbox encaminha eventos confirmados ao SQS com lease e retry persistidos.
 
 ## Reconciliação de carteira
 
@@ -72,6 +72,18 @@ Esses mecanismos são compartilhados entre instâncias porque estado e arbitrage
 - Divergências geram log estruturado com ID da carteira e quantidade de lançamentos, sem incluir valores financeiros, e incrementam `wallet_reconciliation_divergences_total`. `GET /metrics` expõe esse contador no formato Prometheus.
 - O contador está em memória por processo somente como métrica observacional, nunca como controle de idempotência ou de fluxo financeiro. Ele zera após reinício; em ambiente com várias réplicas, o coletor deve consultar cada processo e agregar as séries.
 - Os testes HTTP usam PostgreSQL real, criam uma divergência deliberada de fixture e verificam saldos em strings, diferença, quantidade de lançamentos e incremento da métrica. A fixture altera somente o saldo materializado do schema descartável do teste.
+
+## Observabilidade e validação distribuída
+
+- `WageringMetrics` implementa a porta operacional da Application e expõe o formato Prometheus por `GET /metrics`. Ela registra processamentos financeiros por estado, repetições por `idempotency`/`inbox`/`provider_transaction`, retries por `pending_reference`/`sqs`/`outbox`, quantidade aproximada de mensagens visíveis na DLQ, conflitos de lock, duração da consulta que adquire o lock da carteira, atraso da outbox e duração do processamento. A métrica de divergência da reconciliação permanece separada.
+- Os rótulos têm cardinalidade limitada a enums de estado, origem e tipo de conflito. IDs, chaves de idempotência, conteúdo da mensagem e valores monetários não são rótulos nem aparecem nos logs financeiros estruturados.
+- O contador de conflito é incrementado para SQLSTATE `40P01` (deadlock), `40001` (falha de serialização) e `55P03` (lock indisponível). A espera normal por um lock de linha não é classificada como conflito.
+- `wagering_wallet_lock_acquisition_seconds` mede a duração inteira da consulta `SELECT ... FOR UPDATE` observada no processo, incluindo comunicação com PostgreSQL e decodificação; não isola o tempo interno de espera no servidor. `outbox_lag_seconds` é a idade da linha não publicada mais antiga. A leitura do lag ocorre ao final de cada lote de publicação.
+- `sqs_dlq_visible_messages` vem de `ApproximateNumberOfMessages`, é atualizado na inicialização e em intervalos de 10 segundos, e pode refletir um valor defasado por ser uma contagem aproximada do SQS.
+- Contadores e histogramas são locais ao processo e são zerados no reinício. O monitoramento deve coletar cada réplica e agregar as séries; nenhuma métrica local participa de idempotência ou de decisões financeiras.
+- Os logs HTTP, SQS e workers são JSON com `event`, `correlationId` e IDs operacionais disponíveis (`transactionId`, `providerId`, `walletId`, `messageId`). Os logs não incluem montantes, saldos ou payloads completos.
+- O teste distribuído inicia três processos Bun reais em portas distintas e configura todos para um schema PostgreSQL aleatório, descartado ao final. Envia 50 requisições idênticas pela API, confere um único débito e a igualdade entre saldo e ledger, encerra os processos e inicia três novos. O cenário cria uma transação de prêmio pendente, grava a aposta referenciada, antecipa o retry persistido e verifica a resolução, a referência interna, a ordem da outbox e a exposição das métricas.
+- O teste anterior é de integração concorrente e recuperação após reinício; ele não é um ensaio de carga e não estabelece um limite de throughput. PostgreSQL e LocalStack são serviços reais no teste completo; somente a métrica é mantida em memória pelo processo por se tratar de observabilidade, e não de estado transacional.
 
 ## Entrada assíncrona por SQS e inbox
 
@@ -127,7 +139,7 @@ O consumidor de entrada e o publisher da outbox estão implementados; a Fase 6 c
 ## Verificação
 
 - `bun run check`: verifica os tipos da aplicação e dos testes.
-- `bun test`: executa a suíte; os testes de integração precisam do PostgreSQL local disponível.
+- `bun test --timeout=60000`: executa a suíte; os testes de integração precisam do PostgreSQL e do LocalStack local disponíveis.
 - `bun run test:integration`: executa testes reais de migrations/constraints e dos casos de uso de wagering em schemas temporários isolados, incluindo concorrência, repetição idempotente e rollback.
 - `bun run db:migrate` e `bun run db:migrate:down`: aplicam ou revertem a última migration no banco configurado.
 

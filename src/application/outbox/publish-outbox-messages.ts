@@ -3,6 +3,7 @@
  * Assinatura: Leonardo de Souza da Luz
  */
 import { OutboxMessage } from '../../domain/outbox/outbox-message.js';
+import type { OperationalMetricsPort } from '../observability/operational-metrics.port.js';
 import type {
   OutboxEventPublisherPort,
   OutboxPublishingPersistencePort,
@@ -12,6 +13,10 @@ const CLAIM_BATCH_SIZE = 10;
 const CLAIM_LEASE_SECONDS = 45;
 
 export interface OutboxPublicationFailure {
+  readonly transactionId: string;
+  readonly correlationId?: string;
+  readonly providerId?: string;
+  readonly walletId?: string;
   readonly eventId: string;
   readonly eventType: string;
   readonly phase: 'send' | 'retry-schedule' | 'mark-published';
@@ -26,16 +31,35 @@ export interface OutboxPublicationBatchResult {
   readonly published: number;
   readonly retriesScheduled: number;
   readonly failures: readonly OutboxPublicationFailure[];
+  readonly lagMeasurementFailed?: true;
 }
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : 'Erro desconhecido';
 }
 
+function eventContext(
+  claim: Awaited<ReturnType<OutboxPublishingPersistencePort['claimDueMessages']>>[number],
+): Pick<OutboxPublicationFailure, 'transactionId' | 'correlationId' | 'providerId' | 'walletId'> {
+  const data =
+    typeof claim.payload.data === 'object' && claim.payload.data !== null
+      ? claim.payload.data as Record<string, unknown>
+      : {};
+  return {
+    transactionId: claim.transactionId,
+    ...(typeof claim.payload.correlationId === 'string'
+      ? { correlationId: claim.payload.correlationId }
+      : {}),
+    ...(typeof data.providerId === 'string' ? { providerId: data.providerId } : {}),
+    ...(typeof data.walletId === 'string' ? { walletId: data.walletId } : {}),
+  };
+}
+
 export class PublishOutboxMessages {
   constructor(
     private readonly persistence: OutboxPublishingPersistencePort,
     private readonly publisher: OutboxEventPublisherPort,
+    private readonly metrics?: OperationalMetricsPort,
   ) {}
 
   async executeBatch(): Promise<OutboxPublicationBatchResult> {
@@ -61,6 +85,7 @@ export class PublishOutboxMessages {
           payload: claim.payload,
         });
       } catch (error) {
+        this.metrics?.recordRetry('outbox');
         const retry = message.scheduleRetry(new Date());
         let retryScheduled = false;
         try {
@@ -77,6 +102,7 @@ export class PublishOutboxMessages {
           // O lease vence sozinho caso o PostgreSQL também esteja indisponível.
         }
         failures.push({
+          ...eventContext(claim),
           eventId: claim.id,
           eventType: claim.eventType,
           phase: 'send',
@@ -100,6 +126,7 @@ export class PublishOutboxMessages {
           published += 1;
         } else {
           failures.push({
+            ...eventContext(claim),
             eventId: claim.id,
             eventType: claim.eventType,
             phase: 'mark-published',
@@ -109,6 +136,7 @@ export class PublishOutboxMessages {
         }
       } catch (error) {
         failures.push({
+          ...eventContext(claim),
           eventId: claim.id,
           eventType: claim.eventType,
           phase: 'mark-published',
@@ -118,11 +146,23 @@ export class PublishOutboxMessages {
       }
     }
 
+    let lagMeasurementFailed = false;
+    if (this.metrics) {
+      try {
+        this.metrics.setOutboxLagSeconds(
+          await this.persistence.getOutboxLagSeconds(),
+        );
+      } catch {
+        lagMeasurementFailed = true;
+      }
+    }
+
     return {
       claimed: claims.length,
       published,
       retriesScheduled,
       failures,
+      ...(lagMeasurementFailed ? { lagMeasurementFailed: true as const } : {}),
     };
   }
 }

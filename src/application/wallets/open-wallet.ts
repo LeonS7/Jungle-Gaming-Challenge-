@@ -6,7 +6,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Money } from '../../domain/money/money.js';
 import { LedgerDirection, WalletLedgerEntry } from '../../domain/ledger/wallet-ledger-entry.js';
 import { Wallet } from '../../domain/wallet/wallet.js';
-import { WagerTransaction } from '../../domain/wagering/wager-transaction.js';
+import {
+  WagerTransaction,
+  WagerTransactionStatus,
+} from '../../domain/wagering/wager-transaction.js';
+import type { OperationalMetricsPort } from '../observability/operational-metrics.port.js';
 import {
   WalletBalanceChanged,
   WagerTransactionProcessed,
@@ -29,24 +33,36 @@ export interface OpenWalletResult {
 }
 
 export class OpenWallet {
-  constructor(private readonly persistence: OpenWalletPersistencePort) {}
+  constructor(
+    private readonly persistence: OpenWalletPersistencePort,
+    private readonly metrics?: OperationalMetricsPort,
+  ) {}
 
   async execute(command: OpenWalletCommand): Promise<OpenWalletResult> {
-    const wallet = Wallet.open({
-      id: randomUUID(),
-      playerId: command.playerId,
-      initialBalance: command.initialBalance,
-    });
-    const opening = this.createOpeningRecords(wallet);
+    const startedAt = performance.now();
+    try {
+      const wallet = Wallet.open({
+        id: randomUUID(),
+        playerId: command.playerId,
+        initialBalance: command.initialBalance,
+      });
+      const opening = this.createOpeningRecords(wallet);
 
-    await this.persistence.create(wallet, opening);
-
-    return {
-      id: wallet.id,
-      playerId: wallet.playerId,
-      balance: wallet.balance,
-      version: wallet.version,
-    };
+      await this.persistence.create(wallet, opening);
+      if (opening) {
+        this.metrics?.recordTransactionStatus(WagerTransactionStatus.Processed);
+      }
+      return {
+        id: wallet.id,
+        playerId: wallet.playerId,
+        balance: wallet.balance,
+        version: wallet.version,
+      };
+    } finally {
+      this.metrics?.recordProcessingDuration(
+        (performance.now() - startedAt) / 1000,
+      );
+    }
   }
 
   private createOpeningRecords(

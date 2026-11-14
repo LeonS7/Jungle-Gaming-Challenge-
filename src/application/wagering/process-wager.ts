@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { Money } from '../../domain/money/money.js';
 import { InboxMessage } from '../../domain/messaging/inbox-message.js';
+import type { OperationalMetricsPort } from '../observability/operational-metrics.port.js';
 import { InsufficientWalletBalanceError, Wallet } from '../../domain/wallet/wallet.js';
 import {
   LedgerDirection,
@@ -64,6 +65,14 @@ export interface ProcessWagerResult {
   readonly balance: Money | null;
   readonly idempotentReplay: boolean;
   readonly failureCode?: string;
+}
+
+export interface PendingReferenceProcessingOutcome {
+  readonly transactionId: string;
+  readonly providerId: string;
+  readonly walletId: string;
+  readonly status: WagerTransactionStatus;
+  readonly action: 'retried' | 'processed' | 'rejected' | 'expired';
 }
 
 export interface InboxMessageIdentity {
@@ -153,10 +162,13 @@ function transactionEventData(
 }
 
 export class ProcessWager {
-  constructor(private readonly persistence: WagerPersistencePort) {}
+  constructor(
+    private readonly persistence: WagerPersistencePort,
+    private readonly metrics?: OperationalMetricsPort,
+  ) {}
 
   async execute(command: ProcessWagerCommand): Promise<ProcessWagerResult> {
-    const outcome = await this.executeInternal(command);
+    const outcome = await this.executeMeasured(() => this.executeInternal(command));
     if (outcome.kind === 'DUPLICATE_INBOX_MESSAGE') {
       throw new WagerPersistenceInvariantError(
         'Uma execução HTTP não pode ser deduplicada por inbox.',
@@ -169,7 +181,9 @@ export class ProcessWager {
     command: ProcessWagerCommand,
     identity: InboxMessageIdentity,
   ): Promise<{ readonly duplicate: boolean; readonly result?: ProcessWagerResult }> {
-    const outcome = await this.executeInternal(command, identity);
+    const outcome = await this.executeMeasured(
+      () => this.executeInternal(command, identity),
+    );
     return outcome.kind === 'DUPLICATE_INBOX_MESSAGE'
       ? { duplicate: true }
       : { duplicate: false, result: outcome.result };
@@ -177,6 +191,34 @@ export class ProcessWager {
 
   async recordTerminalInboxMessage(identity: InboxMessageIdentity): Promise<void> {
     await this.completeInboxOutsideWager(identity);
+  }
+
+  private async executeMeasured(
+    operation: () => Promise<InternalWagerResult>,
+  ): Promise<InternalWagerResult> {
+    const startedAt = performance.now();
+    try {
+      const outcome = await operation();
+      if (outcome.kind === 'DUPLICATE_INBOX_MESSAGE') {
+        this.metrics?.recordDuplicate('inbox');
+      } else if (outcome.result.idempotentReplay) {
+        this.metrics?.recordDuplicate('idempotency');
+      } else {
+        this.metrics?.recordTransactionStatus(outcome.result.status);
+      }
+      return outcome;
+    } catch (error) {
+      if (error instanceof IdempotencyConflictError) {
+        this.metrics?.recordDuplicate('idempotency');
+      } else if (error instanceof ProviderTransactionConflictError) {
+        this.metrics?.recordDuplicate('provider_transaction');
+      }
+      throw error;
+    } finally {
+      this.metrics?.recordProcessingDuration(
+        (performance.now() - startedAt) / 1000,
+      );
+    }
   }
 
   private async executeInternal(
@@ -327,12 +369,16 @@ export class ProcessWager {
     readonly processed: number;
     readonly rejected: number;
     readonly retried: number;
+    readonly outcomes: readonly PendingReferenceProcessingOutcome[];
   }> {
-    return this.persistence.transaction(async (session) => {
+    const startedAt = performance.now();
+    try {
+      const result = await this.persistence.transaction(async (session) => {
       const workItems = await session.findDuePendingReferences(limit);
       let processed = 0;
       let rejected = 0;
       let retried = 0;
+      const outcomes: PendingReferenceProcessingOutcome[] = [];
 
       for (const workItem of workItems) {
         const { transaction, retry, databaseNow } = workItem;
@@ -357,6 +403,13 @@ export class ProcessWager {
             2,
           );
           rejected += 1;
+          outcomes.push({
+            transactionId: transaction.id,
+            providerId: transaction.providerId,
+            walletId: transaction.walletId,
+            status: WagerTransactionStatus.Rejected,
+            action: 'expired',
+          });
           continue;
         }
 
@@ -376,6 +429,13 @@ export class ProcessWager {
             schedule.delaySeconds,
           );
           retried += 1;
+          outcomes.push({
+            transactionId: transaction.id,
+            providerId: transaction.providerId,
+            walletId: transaction.walletId,
+            status: WagerTransactionStatus.PendingReference,
+            action: 'retried',
+          });
           continue;
         }
 
@@ -400,13 +460,44 @@ export class ProcessWager {
         );
         if (result.status === WagerTransactionStatus.Processed) {
           processed += 1;
+          outcomes.push({
+            transactionId: transaction.id,
+            providerId: transaction.providerId,
+            walletId: transaction.walletId,
+            status: result.status,
+            action: 'processed',
+          });
         } else {
           rejected += 1;
+          outcomes.push({
+            transactionId: transaction.id,
+            providerId: transaction.providerId,
+            walletId: transaction.walletId,
+            status: result.status,
+            action: 'rejected',
+          });
         }
       }
 
-      return { claimed: workItems.length, processed, rejected, retried };
-    });
+        return { claimed: workItems.length, processed, rejected, retried, outcomes };
+      });
+      for (const outcome of result.outcomes) {
+        if (
+          outcome.status === WagerTransactionStatus.Processed ||
+          outcome.status === WagerTransactionStatus.Rejected
+        ) {
+          this.metrics?.recordTransactionStatus(outcome.status);
+        }
+        if (outcome.action === 'retried') {
+          this.metrics?.recordRetry('pending_reference');
+        }
+      }
+      return result;
+    } finally {
+      this.metrics?.recordProcessingDuration(
+        (performance.now() - startedAt) / 1000,
+      );
+    }
   }
 
   private async applyResolvedTransaction(

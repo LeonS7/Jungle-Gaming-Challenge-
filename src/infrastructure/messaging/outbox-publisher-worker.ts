@@ -38,9 +38,18 @@ export class OutboxPublisherWorker implements OnModuleInit, OnModuleDestroy {
     while (!this.stopping) {
       try {
         const result = await this.publishOutboxMessages.executeBatch();
+        if (result.lagMeasurementFailed) {
+          this.logger.warn(JSON.stringify({
+            event: 'outbox.publisher.lag_measurement_failed',
+          }));
+        }
         for (const failure of result.failures) {
           const details = JSON.stringify({
             event: `outbox.publisher.${failure.phase}_failed`,
+            correlationId: failure.correlationId,
+            transactionId: failure.transactionId,
+            providerId: failure.providerId,
+            walletId: failure.walletId,
             eventId: failure.eventId,
             eventType: failure.eventType,
             attempt: failure.attempt,

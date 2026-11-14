@@ -10,6 +10,7 @@ export interface ApplicationConfig {
     readonly database: string;
     readonly user: string;
     readonly password: string;
+    readonly schema?: string;
   };
   readonly sqs: {
     readonly region: string;
@@ -62,6 +63,12 @@ function requiredHttpEndpoint(environment: Environment, key: string): string {
 export function loadApplicationConfig(
   environment: Environment = process.env,
 ): ApplicationConfig {
+  const schema = environment.DATABASE_SCHEMA?.trim();
+  if (schema && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+    throw new Error(
+      'DATABASE_SCHEMA deve começar com letra ou sublinhado e conter somente letras, números ou sublinhados.',
+    );
+  }
   return {
     appPort: requiredPort(environment, 'APP_PORT'),
     postgres: {
@@ -70,6 +77,7 @@ export function loadApplicationConfig(
       database: requiredString(environment, 'DATABASE_NAME'),
       user: requiredString(environment, 'DATABASE_USER'),
       password: requiredString(environment, 'DATABASE_PASSWORD'),
+      ...(schema ? { schema } : {}),
     },
     sqs: {
       region: requiredString(environment, 'AWS_REGION'),

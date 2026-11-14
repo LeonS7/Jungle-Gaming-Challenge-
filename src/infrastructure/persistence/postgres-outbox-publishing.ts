@@ -56,6 +56,29 @@ export class PostgresOutboxPublishing implements OutboxPublishingPersistencePort
     private readonly schema?: string,
   ) {}
 
+  async getOutboxLagSeconds(): Promise<number> {
+    const entityManager = this.orm.em.fork();
+    try {
+      const rows = await entityManager.getConnection().execute(
+        `select coalesce(
+           extract(epoch from (now() - min("created_at"))),
+           0
+         )::text as "lagSeconds"
+         from ${qualifiedTable(this.schema)}
+         where "published_at" is null`,
+        [],
+        'all',
+      );
+      const value = Number((rows[0] as { readonly lagSeconds: string }).lagSeconds);
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error('O PostgreSQL retornou um atraso inválido para a outbox.');
+      }
+      return value;
+    } finally {
+      entityManager.clear();
+    }
+  }
+
   async claimDueMessages(
     limit: number,
     leaseSeconds: number,
