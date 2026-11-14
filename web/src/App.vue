@@ -23,6 +23,7 @@ import {
   type DashboardSnapshot,
   type HealthState,
 } from './api/dashboard-api';
+import { formatTimestamp } from './features/dashboard/format-timestamp';
 
 const REFRESH_INTERVAL_MILLISECONDS = 15_000;
 type MainSection = 'game' | 'statement' | 'lab';
@@ -83,14 +84,6 @@ function statusLabel(state: HealthState['state']): string {
     return 'Disponível';
   }
   return state === 'checking' ? 'Verificando' : 'Indisponível';
-}
-
-function formatTimestamp(value: Date): string {
-  return new Intl.DateTimeFormat('pt-BR', {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
-    timeZoneName: 'short',
-  }).format(value);
 }
 
 function formatSeconds(value: number): string {

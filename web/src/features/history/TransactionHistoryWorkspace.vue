@@ -6,6 +6,7 @@ import {
   wageringApi,
   type WagerTransactionView,
 } from '../../api/wagering-api';
+import { formatTimestamp } from '../dashboard/format-timestamp';
 
 const props = defineProps<{
   readonly walletId: string | null;
@@ -72,13 +73,6 @@ function statusLabel(status: string): string {
     REJECTED: 'Rejeitada',
   };
   return labels[status] ?? status;
-}
-
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat('pt-BR', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }).format(new Date(value));
 }
 
 async function loadPage(cursor?: string): Promise<void> {
