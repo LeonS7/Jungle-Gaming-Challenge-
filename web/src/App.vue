@@ -256,6 +256,14 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <section v-if="selectedWallet" class="selected-wallet-banner laboratory-wallet-banner" aria-live="polite">
+          <div>
+            <span>CARTEIRA SELECIONADA · {{ selectedWallet.playerId }}</span>
+            <strong>{{ selectedWallet.balance.amount }} {{ selectedWallet.balance.currency }}</strong>
+          </div>
+          <button class="secondary-button" type="button" @click="showSection('game')">Usar no Jogo</button>
+        </section>
+
         <div v-if="pageError" class="alert alert-error" role="alert">
           <span class="alert-icon" aria-hidden="true">!</span>
           {{ pageError }}
@@ -363,6 +371,7 @@ onUnmounted(() => {
           <TransactionLaboratoryWorkspace
             :wallet="selectedWallet"
             @wallet-refreshed="selectWallet"
+            @last-request-changed="lastWagerRequest = $event"
           />
         </section>
         <section class="operation-screen operation-screen-spaced" aria-label="Cenários guiados">
@@ -434,9 +443,11 @@ onUnmounted(() => {
         <section class="operation-screen operation-screen-spaced" aria-label="Mesa Fortune Chimp">
           <CasinoGameWorkspace
             :wallet="selectedWallet"
+            :last-request="lastWagerRequest"
             @wallet-refreshed="selectWallet"
             @last-request-changed="lastWagerRequest = $event"
             @open-statement="showSection('statement')"
+            @open-laboratory="showSection('lab')"
           />
         </section>
         <footer class="page-footer operations-footer">

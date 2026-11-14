@@ -20,7 +20,10 @@ import {
 const REQUEST_TIMEOUT_MILLISECONDS = 8_000;
 const PAGE_SIZE = 20;
 const props = defineProps<{ readonly wallet: WalletView | null }>();
-const emit = defineEmits<{ (event: 'wallet-refreshed', wallet: WalletView): void }>();
+const emit = defineEmits<{
+  (event: 'wallet-refreshed', wallet: WalletView): void;
+  (event: 'last-request-changed', request: RetryableWagerRequest | null): void;
+}>();
 
 const kind = ref<ReversalKind>('REFUND');
 const selectedTransactionId = ref('');
@@ -52,7 +55,10 @@ function newId(): string {
 
 function describeError(error: unknown): string {
   if (error instanceof ApiRequestError) {
-    return `${error.message} (HTTP ${error.status}${error.code ? ` · ${error.code}` : ''})`;
+    const response = `${error.message} (HTTP ${error.status}${error.code ? ` · ${error.code}` : ''}).`;
+    return error.status < 500
+      ? `${response} A API respondeu sem aceitar uma tentativa incerta; veja o estado retornado e corrija os dados se necessário.`
+      : `${response} O resultado é incerto; a solicitação original e a chave foram preservadas para retry idêntico.`;
   }
   return 'A conexão foi interrompida ou excedeu oito segundos. O resultado é incerto; a solicitação original e a chave foram preservadas para retry idêntico.';
 }
@@ -151,6 +157,7 @@ async function sendRequest(request: RetryableWagerRequest): Promise<void> {
       ...(response.failureCode ? { failureCode: response.failureCode } : {}),
     };
     retryRequest.value = null;
+    emit('last-request-changed', request);
     try {
       clearRetryableRequest(storage);
     } catch {
@@ -163,7 +170,16 @@ async function sendRequest(request: RetryableWagerRequest): Promise<void> {
     }
   } catch (error) {
     errorMessage.value = describeError(error);
-    retryRequest.value = request;
+    if (error instanceof ApiRequestError && error.status < 500) {
+      retryRequest.value = null;
+      try {
+        clearRetryableRequest(storage);
+      } catch {
+        // Uma resposta HTTP conhecida não depende da cópia local para manter consistência.
+      }
+    } else {
+      retryRequest.value = request;
+    }
     busy.value = false;
     return;
   }
@@ -236,6 +252,12 @@ watch(() => props.wallet?.id, () => {
   responseResult.value = null;
   void loadHistory();
 }, { immediate: true });
+
+watch(kind, () => {
+  if (!eligibleTransactions.value.some((transaction) => transaction.transactionId === selectedTransactionId.value)) {
+    selectedTransactionId.value = eligibleTransactions.value[0]?.transactionId ?? '';
+  }
+});
 </script>
 
 <template>
@@ -303,6 +325,7 @@ watch(() => props.wallet?.id, () => {
       <div class="idempotency-actions">
         <div><strong>Chave original</strong><span>{{ retryRequest.key }}</span></div>
         <div><strong>Operação</strong><span>{{ retryRequest.payload.kind }} · {{ retryRequest.payload.money.amount }} {{ retryRequest.payload.money.currency }} · {{ retryRequest.payload.externalTransactionId }}</span></div>
+        <div><strong>Jogador / carteira</strong><span>{{ retryRequest.payload.playerId }} · {{ retryRequest.payload.walletId }}</span></div>
         <button class="secondary-button" type="button" :disabled="busy" @click="retryOriginalRequest">{{ busy ? 'Reenviando…' : 'Repetir exatamente' }}</button>
       </div>
     </article>

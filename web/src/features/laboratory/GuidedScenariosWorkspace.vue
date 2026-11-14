@@ -4,10 +4,14 @@ import { ref } from 'vue';
 import {
   ApiRequestError,
   wageringApi,
+  type LedgerEntryView,
+  type ReconciliationView,
   type WalletView,
   type WagerRequest,
   type WagerSubmissionView,
+  type WagerTransactionView,
 } from '../../api/wagering-api';
+import { evaluateConcurrencyAcceptance, type ConcurrencyAcceptanceAudit } from './laboratory-operations';
 
 type ScenarioId = 'concurrency' | 'reversal' | 'out-of-order';
 interface ScenarioResult {
@@ -15,6 +19,12 @@ interface ScenarioResult {
   readonly wallet: WalletView;
   readonly responses: readonly WagerSubmissionView[];
   readonly explanation: string;
+  readonly audit?: ConcurrencyAudit;
+}
+interface ConcurrencyAudit extends ConcurrencyAcceptanceAudit {
+  readonly transactions: readonly WagerTransactionView[];
+  readonly ledger: readonly LedgerEntryView[];
+  readonly reconciliation: ReconciliationView;
 }
 
 const activeScenario = ref<ScenarioId | null>(null);
@@ -37,6 +47,20 @@ async function createScenarioWallet(): Promise<WalletView> {
     amount: '100.00',
     currency: 'BRL',
   });
+}
+
+async function loadEntireLedger(walletId: string): Promise<LedgerEntryView[]> {
+  const entries: LedgerEntryView[] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const page = await wageringApi.getWalletLedger(walletId, cursor);
+    entries.push(...page.items);
+    if (!page.nextCursor) return entries;
+    if (page.nextCursor === cursor) {
+      throw new Error('A paginação do ledger retornou o mesmo cursor novamente.');
+    }
+    cursor = page.nextCursor;
+  }
 }
 
 function wager(
@@ -66,7 +90,7 @@ async function runScenario(scenario: ScenarioId): Promise<void> {
     reversal: 'O cenário cria uma BET de R$ 20,00, faz REFUND da BET e depois ROLLBACK do REFUND. O saldo esperado ao final é R$ 80,00.',
     'out-of-order': 'O cenário envia WIN referenciando uma BET ainda inexistente e depois registra a BET. O WIN deve ficar PENDING_REFERENCE até o worker resolver a referência persistida.',
   };
-  const accepted = window.confirm(`${descriptions[scenario]} As operações serão gravadas no PostgreSQL local. Executar?`);
+  const accepted = window.confirm(`${descriptions[scenario]} A carteira, as transações e os eventos ficarão gravados no PostgreSQL local; não há exclusão nem reset do ledger. Executar?`);
   if (!accepted) {
     return;
   }
@@ -78,11 +102,36 @@ async function runScenario(scenario: ScenarioId): Promise<void> {
     const wallet = await createScenarioWallet();
     const roundId = `round-${newId()}`;
     let responses: WagerSubmissionView[];
+    let audit: ConcurrencyAudit | undefined;
     if (scenario === 'concurrency') {
       responses = await Promise.all([
         wager(wallet, 'BET', '80.00', roundId, `bet-a-${newId()}`),
         wager(wallet, 'BET', '80.00', roundId, `bet-b-${newId()}`),
       ]);
+      const [transactions, ledger, updatedWallet, reconciliation] = await Promise.all([
+        Promise.all(responses.map((response) => wageringApi.getTransaction(response.transactionId))),
+        loadEntireLedger(wallet.id),
+        wageringApi.getWallet(wallet.id),
+        wageringApi.reconcileWallet(wallet.id),
+      ]);
+      const acceptance = evaluateConcurrencyAcceptance(transactions, ledger, updatedWallet, reconciliation);
+      audit = {
+        transactions,
+        ledger,
+        reconciliation,
+        ...acceptance,
+      };
+      result.value = {
+        title: descriptions[scenario],
+        wallet: updatedWallet,
+        responses,
+        audit,
+        explanation: audit.passed
+          ? 'A API confirmou todos os critérios de aceite após consultar carteira, transações, ledger e reconciliação.'
+          : 'A execução terminou, mas um ou mais critérios de aceite não foram confirmados. Confira os estados e dados devolvidos pela API abaixo.',
+      };
+      emit('wallet-created', updatedWallet);
+      return;
     } else if (scenario === 'reversal') {
       const betExternalId = `bet-${newId()}`;
       const bet = await wager(wallet, 'BET', '20.00', roundId, betExternalId);
@@ -101,6 +150,7 @@ async function runScenario(scenario: ScenarioId): Promise<void> {
       title: descriptions[scenario],
       wallet: updatedWallet,
       responses,
+      ...(audit ? { audit } : {}),
       explanation: scenario === 'out-of-order'
         ? 'A resolução do WIN pendente depende do worker persistente. Consulte o extrato ou a transação para acompanhar a mudança de estado.'
         : 'Os estados e o saldo exibidos são respostas consultadas na API depois das operações.',
@@ -124,7 +174,7 @@ function responseLabel(response: WagerSubmissionView): string {
       <div><p class="section-kicker">CENÁRIOS GUIADOS</p><h2>Demonstrações com API real</h2></div>
       <span class="workspace-icon" aria-hidden="true">⚗</span>
     </div>
-    <p class="workspace-help">Cada execução cria uma carteira nova de R$ 100,00 e grava comandos reais no PostgreSQL. A página mostra apenas o que a API devolve.</p>
+    <p class="workspace-help">Cada execução cria uma carteira nova de R$ 100,00 e grava comandos reais no PostgreSQL. Carteiras, transações e eventos são permanentes; não há exclusão nem reset do ledger.</p>
     <div class="scenario-grid">
       <article class="scenario-card">
         <h3>Duas BETs simultâneas</h3>
@@ -150,6 +200,17 @@ function responseLabel(response: WagerSubmissionView): string {
       <p>{{ result.title }}</p>
       <p>Carteira: <span class="mono-value">{{ result.wallet.id }}</span> · saldo consultado: <b>{{ result.wallet.balance.amount }} {{ result.wallet.balance.currency }}</b></p>
       <ul><li v-for="response in result.responses" :key="response.transactionId"><span class="mono-value">{{ response.transactionId }}</span> — {{ responseLabel(response) }}</li></ul>
+      <div v-if="result.audit" class="scenario-audit">
+        <strong>{{ result.audit.passed ? 'Critérios de aceite confirmados' : 'Critérios de aceite não confirmados' }}</strong>
+        <ul>
+          <li>{{ result.audit.twoBetsAreEighty ? '✓' : '✗' }} Duas BETs de 80.00 BRL consultadas</li>
+          <li>{{ result.audit.oneProcessed ? '✓' : '✗' }} Uma BET PROCESSED</li>
+          <li>{{ result.audit.oneRejectedForInsufficientFunds ? '✓' : '✗' }} Uma BET REJECTED por INSUFFICIENT_FUNDS</li>
+          <li>{{ result.audit.oneDebitOfEighty ? '✓' : '✗' }} Exatamente um DEBIT de 80.00 no ledger ({{ result.audit.ledger.filter((entry) => entry.direction === 'DEBIT').length }} encontrado(s))</li>
+          <li>{{ result.audit.finalBalanceIsTwenty ? '✓' : '✗' }} Saldo consultado: {{ result.wallet.balance.amount }} {{ result.wallet.balance.currency }}; esperado 20.00 BRL</li>
+          <li>{{ result.audit.reconciled ? '✓' : '✗' }} Reconciliação: {{ result.audit.reconciliation.consistent ? 'consistente' : 'divergente' }} · {{ result.audit.reconciliation.checkedEntries }} lançamentos</li>
+        </ul>
+      </div>
       <p>{{ result.explanation }}</p>
     </div>
     <p v-if="errorMessage" class="workspace-message message-error" role="alert">{{ errorMessage }}</p>

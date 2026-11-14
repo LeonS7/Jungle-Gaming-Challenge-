@@ -10,6 +10,7 @@ import {
   type WagerSubmissionView,
   type WagerTransactionView,
 } from '../../api/wagering-api';
+import { clearRetryableRequest, saveRetryableRequest } from '../laboratory/laboratory-operations';
 
 interface LastWagerRequest {
   readonly payload: WagerRequest;
@@ -63,9 +64,14 @@ watch(() => props.wallet, (wallet) => {
 }, { immediate: true });
 
 function showError(error: unknown): void {
-  errorMessage.value = error instanceof ApiRequestError
-    ? `${error.message} (HTTP ${error.status}${error.code ? ` · ${error.code}` : ''})`
-    : 'Não foi possível concluir a solicitação. Verifique se a API está disponível.';
+  if (error instanceof ApiRequestError) {
+    const response = `${error.message} (HTTP ${error.status}${error.code ? ` · ${error.code}` : ''}).`;
+    errorMessage.value = error.status < 500
+      ? `${response} Consulte a API e corrija os dados se necessário.`
+      : `${response} O payload e a chave originais foram preservados para retry idêntico.`;
+    return;
+  }
+  errorMessage.value = 'A conexão foi interrompida ou excedeu oito segundos. O payload e a chave originais foram preservados para retry idêntico.';
 }
 
 function makePayload(): WagerRequest | null {
@@ -103,10 +109,24 @@ async function process(payload: WagerRequest, key: string, confirmation: string)
   if (!accepted) return;
 
   busy.value = true;
+  let storage: Storage;
   try {
-    submission.value = await wageringApi.submitWager(payload, key);
-    if (props.mode !== 'laboratory') {
-      emit('last-request-changed', { payload, key });
+    storage = window.localStorage;
+    saveRetryableRequest(storage, { payload, key });
+  } catch {
+    errorMessage.value = 'O navegador bloqueou o armazenamento da solicitação original; a operação não foi enviada.';
+    busy.value = false;
+    return;
+  }
+  if (props.mode !== 'laboratory') {
+    emit('last-request-changed', { payload, key });
+  }
+  try {
+    submission.value = await wageringApi.submitWager(payload, key, AbortSignal.timeout(8_000));
+    try {
+      clearRetryableRequest(storage);
+    } catch {
+      // A cópia local pode ser repetida com segurança porque a chave é validada no PostgreSQL.
     }
     transaction.value = null;
     successMessage.value = submission.value.idempotentReplay
@@ -117,6 +137,13 @@ async function process(payload: WagerRequest, key: string, confirmation: string)
       emit('wallet-refreshed', refreshed);
     }
   } catch (error) {
+    if (error instanceof ApiRequestError && error.status < 500) {
+      try {
+        clearRetryableRequest(storage);
+      } catch {
+        // A resposta HTTP está disponível; não há resultado financeiro incerto.
+      }
+    }
     showError(error);
   } finally {
     busy.value = false;

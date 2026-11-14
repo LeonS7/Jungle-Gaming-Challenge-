@@ -379,6 +379,9 @@ body { background: radial-gradient(circle at 70% -10%, #2a1a54 0, transparent 35
 .scenario-result strong { color: #7ff3bc; font-size: 12px; }
 .scenario-result p { margin: 0; line-height: 1.5; }
 .scenario-result ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; }
+.scenario-audit { display: grid; gap: 8px; padding: 12px; border: 1px solid #3d625d; border-radius: 7px; background: #0d1d2a; }
+.scenario-audit > strong { color: #f6d365; }
+.scenario-audit li { line-height: 1.5; }
 .history-status-processed { color: #98f1bf; background: #173c32; }
 .history-status-rejected { color: #ffb3be; background: #452130; }
 .history-status-pending, .history-status-pending_reference { color: #ffe09a; background: #3f341b; }

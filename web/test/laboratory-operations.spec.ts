@@ -1,10 +1,11 @@
 /** Esta página verifica regras de preparação e retry das ferramentas de laboratório. Assinatura: Leonardo de Souza da Luz */
 import { describe, expect, test } from 'bun:test';
-import type { WagerTransactionView } from '../src/api/wagering-api';
+import type { LedgerEntryView, ReconciliationView, WalletView, WagerTransactionView } from '../src/api/wagering-api';
 import {
   canReverseTransaction,
   clearRetryableRequest,
   createReversalPayload,
+  evaluateConcurrencyAcceptance,
   loadRetryableRequest,
   saveRetryableRequest,
   type RetryableWagerRequest,
@@ -88,5 +89,58 @@ describe('operações do laboratório', () => {
 
     expect(loadRetryableRequest(storage)).toBeNull();
     expect(storage.length).toBe(0);
+  });
+
+  test('confirma o cenário concorrente somente com dados de saldo, transações, ledger e reconciliação', () => {
+    const processed = createTransaction({
+      transactionId: 'bet-processada',
+      externalTransactionId: 'bet-a',
+      status: 'PROCESSED',
+    });
+    const rejected = createTransaction({
+      transactionId: 'bet-rejeitada',
+      externalTransactionId: 'bet-b',
+      status: 'REJECTED',
+      failureCode: 'INSUFFICIENT_FUNDS',
+    });
+    const ledger: LedgerEntryView[] = [
+      {
+        id: 'abertura', transactionId: 'opening', direction: 'CREDIT',
+        money: { amount: '100.00', currency: 'BRL' },
+        balanceBefore: { amount: '0.00', currency: 'BRL' },
+        balanceAfter: { amount: '100.00', currency: 'BRL' },
+        createdAt: '2026-11-14T12:00:00.000Z',
+      },
+      {
+        id: 'debito', transactionId: 'bet-processada', direction: 'DEBIT',
+        money: { amount: '80.00', currency: 'BRL' },
+        balanceBefore: { amount: '100.00', currency: 'BRL' },
+        balanceAfter: { amount: '20.00', currency: 'BRL' },
+        createdAt: '2026-11-14T12:00:01.000Z',
+      },
+    ];
+    const wallet: WalletView = {
+      id: 'carteira-1', playerId: 'jogador-1',
+      balance: { amount: '20.00', currency: 'BRL' }, version: 2,
+    };
+    const reconciliation: ReconciliationView = {
+      walletId: 'carteira-1',
+      storedBalance: { amount: '20.00', currency: 'BRL' },
+      calculatedBalance: { amount: '20.00', currency: 'BRL' },
+      difference: { amount: '0.00', currency: 'BRL' },
+      consistent: true,
+      checkedEntries: 2,
+    };
+
+    expect(evaluateConcurrencyAcceptance([processed, rejected], ledger, wallet, reconciliation)).toEqual({
+      twoBetsAreEighty: true,
+      oneProcessed: true,
+      oneRejectedForInsufficientFunds: true,
+      oneDebitOfEighty: true,
+      finalBalanceIsTwenty: true,
+      reconciled: true,
+      passed: true,
+    });
+    expect(evaluateConcurrencyAcceptance([processed, rejected], ledger.slice(0, 1), wallet, reconciliation).passed).toBe(false);
   });
 });

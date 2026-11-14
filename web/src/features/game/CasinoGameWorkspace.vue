@@ -1,6 +1,6 @@
 <!-- Esta página oferece a experiência de jogo Fortune Chimp usando somente a API financeira real. Assinatura: Leonardo de Souza da Luz -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   ApiRequestError,
   wageringApi,
@@ -8,6 +8,12 @@ import {
   type WagerRequest,
   type WagerSubmissionView,
 } from '../../api/wagering-api';
+import {
+  clearRetryableRequest,
+  loadRetryableRequest,
+  saveRetryableRequest,
+  type RetryableWagerRequest,
+} from '../laboratory/laboratory-operations';
 
 interface ActiveBet {
   readonly externalTransactionId: string;
@@ -15,10 +21,14 @@ interface ActiveBet {
   readonly amount: string;
 }
 
-const props = defineProps<{ readonly wallet: WalletView | null }>();
+const props = defineProps<{
+  readonly wallet: WalletView | null;
+  readonly lastRequest?: RetryableWagerRequest | null;
+}>();
 const emit = defineEmits<{
   (event: 'wallet-refreshed', wallet: WalletView): void;
   (event: 'open-statement'): void;
+  (event: 'open-laboratory'): void;
   (event: 'last-request-changed', request: { payload: WagerRequest; key: string } | null): void;
 }>();
 
@@ -31,18 +41,24 @@ const busy = ref(false);
 const result = ref<WagerSubmissionView | null>(null);
 const errorMessage = ref<string | null>(null);
 const successMessage = ref<string | null>(null);
+const pendingRetry = ref<RetryableWagerRequest | null>(null);
 
-const canBet = computed(() => props.wallet !== null && !busy.value && activeBet.value === null);
-const canResolve = computed(() => activeBet.value !== null && !busy.value);
+const canBet = computed(() => props.wallet !== null && !busy.value && activeBet.value === null && pendingRetry.value === null);
+const canResolve = computed(() => activeBet.value !== null && !busy.value && pendingRetry.value === null);
 
 function newId(): string {
   return globalThis.crypto.randomUUID();
 }
 
 function showError(error: unknown): void {
-  errorMessage.value = error instanceof ApiRequestError
-    ? `${error.message} (HTTP ${error.status}${error.code ? ` · ${error.code}` : ''})`
-    : 'Não foi possível concluir a jogada. Verifique se a API está disponível.';
+  if (error instanceof ApiRequestError) {
+    const response = `${error.message} (HTTP ${error.status}${error.code ? ` · ${error.code}` : ''}).`;
+    errorMessage.value = error.status < 500
+      ? `${response} A API respondeu; confira o resultado e use a ferramenta de idempotência no Laboratório se necessário.`
+      : `${response} O resultado é incerto; o payload original e a chave foram preservados para retry no Laboratório.`;
+    return;
+  }
+  errorMessage.value = 'A conexão foi interrompida ou excedeu oito segundos. O resultado é incerto; o payload original e a chave foram preservados para retry no Laboratório.';
 }
 
 function validPositiveMoney(value: string): boolean {
@@ -56,24 +72,77 @@ async function refreshWallet(): Promise<void> {
   emit('wallet-refreshed', await wageringApi.getWallet(props.wallet.id));
 }
 
+async function restoreProcessedBet(): Promise<void> {
+  const request = props.lastRequest;
+  const wallet = props.wallet;
+  if (!request || request.payload.kind !== 'BET' || !wallet || request.payload.walletId !== wallet.id) {
+    return;
+  }
+  try {
+    const transaction = await wageringApi.getProviderTransaction(
+      request.payload.providerId,
+      request.payload.externalTransactionId,
+    );
+    if (transaction.status !== 'PROCESSED' || props.wallet?.id !== wallet.id) return;
+    activeBet.value = {
+      externalTransactionId: transaction.externalTransactionId,
+      roundId: transaction.roundId,
+      amount: transaction.money.amount,
+    };
+    if (transaction.money.amount === '10.00') prizeAmount.value = '20.00';
+    successMessage.value = 'A BET processada foi recuperada da API. Escolha o resultado desta rodada.';
+  } catch {
+    // A rodada não é reconstruída quando a API não confirma que a BET foi processada.
+  }
+}
+
 async function submit(payload: WagerRequest, label: string): Promise<WagerSubmissionView | null> {
   busy.value = true;
   errorMessage.value = null;
   successMessage.value = null;
+  const request = { payload, key: newId() };
+  let storage: Storage;
   try {
-    const key = newId();
-    const submission = await wageringApi.submitWager(payload, key);
-    emit('last-request-changed', { payload, key });
-    result.value = submission;
+    storage = window.localStorage;
+    saveRetryableRequest(storage, request);
+  } catch {
+    errorMessage.value = 'O navegador bloqueou o armazenamento da solicitação original; a operação não foi enviada.';
+    busy.value = false;
+    return null;
+  }
+  pendingRetry.value = request;
+  emit('last-request-changed', request);
+  let submission: WagerSubmissionView;
+  try {
+    submission = await wageringApi.submitWager(payload, request.key, AbortSignal.timeout(8_000));
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status < 500) {
+      try {
+        clearRetryableRequest(storage);
+      } catch {
+        // A resposta HTTP está disponível; o PostgreSQL continua sendo a fonte da verdade.
+      }
+      pendingRetry.value = null;
+    }
+    showError(error);
+    busy.value = false;
+    return null;
+  }
+  try {
+    clearRetryableRequest(storage);
+  } catch {
+    // Uma cópia local antiga continua protegida pelo registro idempotente do PostgreSQL.
+  }
+  pendingRetry.value = null;
+  result.value = submission;
+  try {
     await refreshWallet();
     successMessage.value = `${label}: ${submission.status}. O resultado foi recebido da API.`;
-    return submission;
-  } catch (error) {
-    showError(error);
-    return null;
-  } finally {
-    busy.value = false;
+  } catch {
+    successMessage.value = `${label}: ${submission.status}. A operação foi confirmada pela API, mas o saldo precisa ser consultado novamente.`;
   }
+  busy.value = false;
+  return submission;
 }
 
 async function placeBet(): Promise<void> {
@@ -149,6 +218,17 @@ watch(() => props.wallet?.id, () => {
   result.value = null;
   errorMessage.value = null;
   successMessage.value = null;
+  void restoreProcessedBet();
+});
+
+watch(() => props.lastRequest, () => void restoreProcessedBet());
+
+onMounted(() => {
+  try {
+    pendingRetry.value = loadRetryableRequest(window.localStorage);
+  } catch {
+    errorMessage.value = 'O navegador bloqueou a leitura de uma tentativa pendente. Abra o Laboratório para verificar e tentar novamente.';
+  }
 });
 </script>
 
@@ -166,6 +246,11 @@ watch(() => props.wallet?.id, () => {
         <div><span>CARTEIRA</span><strong>{{ wallet.balance.currency }}</strong></div>
         <div class="casino-balance"><span>SALDO DISPONÍVEL</span><strong>{{ wallet.balance.amount }} {{ wallet.balance.currency }}</strong></div>
       </header>
+
+      <div v-if="pendingRetry" class="notice-box" role="status">
+        Existe uma tentativa com resultado incerto. Novas apostas e resultados ficam bloqueados até reenviar o payload original no Laboratório.
+        <button class="secondary-button compact-button" type="button" @click="emit('open-laboratory')">Abrir Laboratório</button>
+      </div>
 
       <div class="fortune-stage" :class="{ 'fortune-stage-active': activeBet }">
         <div class="fortune-lights" aria-hidden="true">✦ ✦ ✦</div>
@@ -209,7 +294,10 @@ watch(() => props.wallet?.id, () => {
         <span v-else-if="result.failureCode">Resultado: {{ result.failureCode }}</span>
         <button type="button" class="secondary-button compact-button" @click="emit('open-statement')">Ver no extrato</button>
       </div>
-      <p v-if="errorMessage" class="workspace-message message-error" role="alert">{{ errorMessage }}</p>
+      <div v-if="errorMessage" class="workspace-message message-error" role="alert">
+        {{ errorMessage }}
+        <button v-if="pendingRetry" class="secondary-button compact-button" type="button" @click="emit('open-laboratory')">Abrir Laboratório para retry</button>
+      </div>
       <p v-if="successMessage" class="workspace-message message-success" role="status">{{ successMessage }}</p>
     </template>
   </section>

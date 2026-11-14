@@ -1,11 +1,27 @@
 /** Este módulo prepara reversões usando apenas transações persistidas pela API e guarda a solicitação incerta para retry idêntico. Assinatura: Leonardo de Souza da Luz */
-import type { WagerRequest, WagerTransactionView } from '../../api/wagering-api';
+import type {
+  LedgerEntryView,
+  ReconciliationView,
+  WalletView,
+  WagerRequest,
+  WagerTransactionView,
+} from '../../api/wagering-api';
 
 export type ReversalKind = 'REFUND' | 'ROLLBACK';
 
 export interface RetryableWagerRequest {
   readonly payload: WagerRequest;
   readonly key: string;
+}
+
+export interface ConcurrencyAcceptanceAudit {
+  readonly twoBetsAreEighty: boolean;
+  readonly oneProcessed: boolean;
+  readonly oneRejectedForInsufficientFunds: boolean;
+  readonly oneDebitOfEighty: boolean;
+  readonly finalBalanceIsTwenty: boolean;
+  readonly reconciled: boolean;
+  readonly passed: boolean;
 }
 
 const RETRY_STORAGE_KEY = 'jungle-gaming:pending-wager-retry:v1';
@@ -76,7 +92,12 @@ export function saveRetryableRequest(
 export function loadRetryableRequest(
   storage: Pick<Storage, 'getItem' | 'removeItem'>,
 ): RetryableWagerRequest | null {
-  const saved = storage.getItem(RETRY_STORAGE_KEY);
+  let saved: string | null;
+  try {
+    saved = storage.getItem(RETRY_STORAGE_KEY);
+  } catch {
+    return null;
+  }
   if (!saved) return null;
   try {
     const parsed: unknown = JSON.parse(saved);
@@ -84,10 +105,50 @@ export function loadRetryableRequest(
   } catch {
     // Um valor local inválido é descartado; a API continua sendo a fonte da verdade.
   }
-  storage.removeItem(RETRY_STORAGE_KEY);
+  try {
+    storage.removeItem(RETRY_STORAGE_KEY);
+  } catch {
+    // O valor inválido não é usado na operação mesmo se não puder ser removido.
+  }
   return null;
 }
 
 export function clearRetryableRequest(storage: Pick<Storage, 'removeItem'>): void {
   storage.removeItem(RETRY_STORAGE_KEY);
+}
+
+export function evaluateConcurrencyAcceptance(
+  transactions: readonly WagerTransactionView[],
+  ledger: readonly LedgerEntryView[],
+  wallet: WalletView,
+  reconciliation: ReconciliationView,
+): ConcurrencyAcceptanceAudit {
+  const debitEntries = ledger.filter((entry) => entry.direction === 'DEBIT');
+  const twoBetsAreEighty = transactions.length === 2 && transactions.every(
+    (transaction) => transaction.kind === 'BET' && transaction.money.amount === '80.00' && transaction.money.currency === 'BRL',
+  );
+  const oneProcessed = transactions.length === 2 && transactions.filter(
+    (transaction) => transaction.status === 'PROCESSED',
+  ).length === 1;
+  const oneRejectedForInsufficientFunds = transactions.length === 2 && transactions.filter(
+    (transaction) => transaction.status === 'REJECTED' && transaction.failureCode === 'INSUFFICIENT_FUNDS',
+  ).length === 1;
+  const oneDebitOfEighty = debitEntries.length === 1 && debitEntries[0]?.money.amount === '80.00' && debitEntries[0].money.currency === 'BRL';
+  const finalBalanceIsTwenty = wallet.balance.amount === '20.00' && wallet.balance.currency === 'BRL';
+  const reconciled = reconciliation.consistent &&
+    reconciliation.storedBalance.amount === '20.00' &&
+    reconciliation.storedBalance.currency === 'BRL' &&
+    reconciliation.calculatedBalance.amount === '20.00' &&
+    reconciliation.calculatedBalance.currency === 'BRL' &&
+    reconciliation.checkedEntries === ledger.length;
+
+  return {
+    twoBetsAreEighty,
+    oneProcessed,
+    oneRejectedForInsufficientFunds,
+    oneDebitOfEighty,
+    finalBalanceIsTwenty,
+    reconciled,
+    passed: twoBetsAreEighty && oneProcessed && oneRejectedForInsufficientFunds && oneDebitOfEighty && finalBalanceIsTwenty && reconciled,
+  };
 }

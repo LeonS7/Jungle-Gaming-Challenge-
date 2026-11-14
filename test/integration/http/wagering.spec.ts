@@ -64,6 +64,7 @@ interface WalletTransactionsHttpResponse {
     readonly kind: string;
     readonly money: { readonly amount: string; readonly currency: string };
     readonly status: string;
+    readonly failureCode?: string | null;
     readonly balance: { readonly amount: string; readonly currency: string } | null;
     readonly createdAt: string;
     readonly processedAt: string | null;
@@ -294,6 +295,70 @@ test('POST BET processa 50 repetições e devolve resposta idempotente', async (
     const providerConflict = await providerConflictResponse.json() as HttpResponseBody;
     expect(providerConflictResponse.status).toBe(409);
     expect(providerConflict.code).toBe('PROVIDER_TRANSACTION_CONFLICT');
+  });
+});
+
+test('aceite HTTP cria carteira dedicada e prova concorrência, extrato, ledger e reconciliação', async () => {
+  await withHttpApplication(async ({ baseUrl }) => {
+    const playerId = `demo-concorrencia-${randomUUID()}`;
+    const walletResponse = await createWallet(baseUrl, {
+      playerId,
+      initialBalance: { amount: '100.00', currency: 'BRL' },
+    });
+    const createdWallet = await walletResponse.json() as HttpResponseBody;
+    expect(walletResponse.status).toBe(201);
+    expect(createdWallet.id).toBeDefined();
+    expect(createdWallet.balance?.amount).toBe('100.00');
+    const walletId = createdWallet.id as string;
+    const roundId = `rodada-concorrencia-${randomUUID()}`;
+    const betA = createRequest(playerId, walletId, {
+      externalTransactionId: `bet-a-${randomUUID()}`,
+      roundId,
+      money: { amount: '80.00', currency: 'BRL' },
+    });
+    const betB = createRequest(playerId, walletId, {
+      externalTransactionId: `bet-b-${randomUUID()}`,
+      roundId,
+      money: { amount: '80.00', currency: 'BRL' },
+    });
+
+    const wagerResponses = await Promise.all([
+      submit(baseUrl, betA, `chave-a-${randomUUID()}`),
+      submit(baseUrl, betB, `chave-b-${randomUUID()}`),
+    ]);
+    const wagerBodies = await Promise.all(
+      wagerResponses.map((response) => response.json() as Promise<HttpResponseBody>),
+    );
+    const [walletAfterResponse, transactionsResponse, ledgerResponse, reconciliationResponse] = await Promise.all([
+      fetch(`${baseUrl}/wallets/${walletId}`),
+      fetch(`${baseUrl}/wallets/${walletId}/transactions?limit=100`),
+      fetch(`${baseUrl}/wallets/${walletId}/ledger?limit=100`),
+      fetch(`${baseUrl}/wallets/${walletId}/reconciliation`, { method: 'POST' }),
+    ]);
+    const walletAfter = await walletAfterResponse.json() as HttpResponseBody;
+    const transactions = await transactionsResponse.json() as WalletTransactionsHttpResponse;
+    const ledger = await ledgerResponse.json() as WalletLedgerHttpResponse;
+    const reconciliation = await reconciliationResponse.json() as WalletReconciliationHttpResponse;
+    const betTransactions = transactions.items?.filter((transaction) => transaction.kind === 'BET') ?? [];
+    const debits = ledger.items?.filter((entry) => entry.direction === 'DEBIT') ?? [];
+    const processedBet = betTransactions.find((transaction) => transaction.status === 'PROCESSED');
+
+    expect(wagerResponses.every((response) => response.status === 200)).toBe(true);
+    expect(new Set(wagerBodies.map((body) => body.transactionId)).size).toBe(2);
+    expect(wagerBodies.map((body) => body.status).sort()).toEqual(['PROCESSED', 'REJECTED']);
+    expect(wagerBodies.filter((body) => body.failureCode === 'INSUFFICIENT_FUNDS')).toHaveLength(1);
+    expect(walletAfter.balance?.amount).toBe('20.00');
+    expect(betTransactions.map((transaction) => transaction.status).sort()).toEqual(['PROCESSED', 'REJECTED']);
+    expect(betTransactions.map((transaction) => transaction.money.amount).sort()).toEqual(['80.00', '80.00']);
+    expect(betTransactions.filter((transaction) => transaction.failureCode === 'INSUFFICIENT_FUNDS')).toHaveLength(1);
+    expect(debits).toHaveLength(1);
+    expect(debits[0]?.money.amount).toBe('80.00');
+    expect(debits[0]?.transactionId).toBe(processedBet?.transactionId);
+    expect(reconciliationResponse.status).toBe(200);
+    expect(reconciliation.consistent).toBe(true);
+    expect(reconciliation.storedBalance?.amount).toBe('20.00');
+    expect(reconciliation.calculatedBalance?.amount).toBe('20.00');
+    expect(reconciliation.checkedEntries).toBe(ledger.items?.length);
   });
 });
 
