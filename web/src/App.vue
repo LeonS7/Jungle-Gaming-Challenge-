@@ -4,6 +4,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import WalletWorkspace from './features/wallets/WalletWorkspace.vue';
 import WageringWorkspace from './features/wagering/WageringWorkspace.vue';
 import TransactionHistoryWorkspace from './features/history/TransactionHistoryWorkspace.vue';
+import CasinoGameWorkspace from './features/game/CasinoGameWorkspace.vue';
+import GuidedScenariosWorkspace from './features/laboratory/GuidedScenariosWorkspace.vue';
 import {
   readSelectedWalletId,
   removeSelectedWalletId,
@@ -341,6 +343,9 @@ onUnmounted(() => {
             @wallet-refreshed="selectWallet"
           />
         </section>
+        <section class="operation-screen operation-screen-spaced" aria-label="Cenários guiados">
+          <GuidedScenariosWorkspace @wallet-created="selectWallet" />
+        </section>
         <footer class="page-footer">
           <span class="footer-lock" aria-hidden="true">◈</span>
           Os indicadores são locais à instância consultada e reiniciam com o processo.
@@ -397,11 +402,9 @@ onUnmounted(() => {
             @wallet-selected="selectWallet"
           />
         </section>
-        <section class="operation-screen operation-screen-spaced" aria-label="Wagering">
-          <WageringWorkspace
+        <section class="operation-screen operation-screen-spaced" aria-label="Mesa Fortune Chimp">
+          <CasinoGameWorkspace
             :wallet="selectedWallet"
-            mode="game"
-            :last-request="lastWagerRequest"
             @wallet-refreshed="selectWallet"
             @last-request-changed="lastWagerRequest = $event"
             @open-statement="activeSection = 'statement'"

@@ -1,19 +1,19 @@
 /* Esta página define os estilos responsivos das áreas do painel e seus componentes. Assinatura: Leonardo de Souza da Luz */
 :root {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  color: #17251f;
-  background: #f3f5f2;
+  color: #edf0ff;
+  background: #090b1b;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --ink: #17251f;
-  --muted: #7d8a83;
-  --line: #e8ece8;
-  --green: #1b8759;
-  --green-dark: #12583f;
-  --green-pale: #e9f5ed;
-  --red: #bf5a53;
-  --amber: #b98432;
+  --ink: #f3f4ff;
+  --muted: #a0a7c0;
+  --line: #29304b;
+  --green: #3ddc97;
+  --green-dark: #167951;
+  --green-pale: #153a35;
+  --red: #ff6b7a;
+  --amber: #f5c451;
 }
 
 * { box-sizing: border-box; }
@@ -31,8 +31,8 @@ button { cursor: pointer; }
   flex-direction: column;
   width: 244px;
   padding: 27px 18px 20px;
-  color: #eaf4ee;
-  background: #123e2e;
+  color: #e8e7ff;
+  background: linear-gradient(180deg, #16133c 0%, #0d1027 100%);
 }
 .brand-mark { display: flex; align-items: center; gap: 11px; color: inherit; text-decoration: none; }
 .brand-symbol {
@@ -40,33 +40,33 @@ button { cursor: pointer; }
   width: 38px;
   height: 38px;
   place-items: center;
-  border: 1px solid #78b798;
+  border: 1px solid #9d7cff;
   border-radius: 12px;
-  color: #b8e2ca;
+  color: #f6d365;
   font-family: Manrope, sans-serif;
   font-size: 22px;
   font-weight: 800;
 }
 .brand-name { font-family: Manrope, sans-serif; font-size: 15px; font-weight: 800; letter-spacing: -.4px; }
-.brand-name span { display: block; margin-top: -2px; color: #9abca8; font-size: 11px; font-weight: 500; letter-spacing: .4px; }
-.rail-caption { margin: 54px 0 12px 11px; color: #83a995; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
+.brand-name span { display: block; margin-top: -2px; color: #aaa8de; font-size: 11px; font-weight: 500; letter-spacing: .4px; }
+.rail-caption { margin: 54px 0 12px 11px; color: #9b9ccf; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
 .main-navigation { display: grid; gap: 4px; }
-.nav-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 8px; color: #b7cec1; background: transparent; font-size: 12px; text-align: left; cursor: pointer; }
-.nav-item-active { color: #fff; background: #225840; }
-.nav-item:focus-visible { outline: 2px solid #b8e2ca; outline-offset: 2px; }
+.nav-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 8px; color: #bbbce3; background: transparent; font-size: 12px; text-align: left; cursor: pointer; }
+.nav-item-active { color: #fff; background: linear-gradient(90deg, #6944df, #422b9b); box-shadow: 0 8px 20px #0c092980; }
+.nav-item:focus-visible { outline: 2px solid #f5c451; outline-offset: 2px; }
 .nav-icon { width: 18px; text-align: center; font-size: 18px; }
-.rail-footer { display: flex; align-items: center; gap: 9px; margin-top: auto; padding: 14px 10px; border-top: 1px solid #2c5944; color: #a4c0af; font-size: 10px; }
-.local-indicator, .environment-badge span { width: 7px; height: 7px; border-radius: 50%; background: #83d2a4; box-shadow: 0 0 0 3px #83d2a41e; }
+.rail-footer { display: flex; align-items: center; gap: 9px; margin-top: auto; padding: 14px 10px; border-top: 1px solid #35345b; color: #abaed3; font-size: 10px; }
+.local-indicator, .environment-badge span { width: 7px; height: 7px; border-radius: 50%; background: #3ddc97; box-shadow: 0 0 0 3px #3ddc971e; }
 
 .main-area { min-height: 100vh; margin-left: 244px; }
-.topbar { display: flex; align-items: center; justify-content: space-between; height: 70px; padding: 0 42px; border-bottom: 1px solid var(--line); background: #fbfcfa; }
-.breadcrumb { color: #87938c; font-size: 11px; }
-.breadcrumb span { margin: 0 9px; color: #b5beb8; }
+.topbar { display: flex; align-items: center; justify-content: space-between; height: 70px; padding: 0 42px; border-bottom: 1px solid var(--line); background: #10142c; }
+.breadcrumb { color: #a9afd0; font-size: 11px; }
+.breadcrumb span { margin: 0 9px; color: #686d96; }
 .topbar-actions { display: flex; align-items: center; gap: 18px; }
-.environment-badge { display: inline-flex; align-items: center; gap: 7px; color: #60756a; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
-.environment-badge span { width: 6px; height: 6px; background: #d6a342; box-shadow: none; }
-.refresh-button { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 1px solid #dfe6e0; border-radius: 7px; color: #335844; background: #fff; font-size: 11px; font-weight: 600; }
-.refresh-button:hover:not(:disabled) { border-color: #a8c9b4; background: #f8fcf9; }
+.environment-badge { display: inline-flex; align-items: center; gap: 7px; color: #b2b8d9; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+.environment-badge span { width: 6px; height: 6px; background: #f5c451; box-shadow: none; }
+.refresh-button { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 1px solid #3d4266; border-radius: 7px; color: #e4e5fb; background: #1b2040; font-size: 11px; font-weight: 600; }
+.refresh-button:hover:not(:disabled) { border-color: #8b68ef; background: #29204d; }
 .refresh-button:disabled { cursor: wait; opacity: .7; }
 .refresh-icon { font-size: 18px; line-height: 1; }
 .spinning { animation: spin 1s linear infinite; }
@@ -74,14 +74,14 @@ button { cursor: pointer; }
 
 .content-area { width: min(1120px, 100%); margin: 0 auto; padding: 43px 42px 35px; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 33px; }
-.eyebrow, .section-kicker { margin: 0 0 9px; color: #829087; font-size: 9px; font-weight: 700; letter-spacing: 1.3px; }
-.eyebrow span { padding: 0 4px; color: #b8c1bb; }
+.eyebrow, .section-kicker { margin: 0 0 9px; color: #aaa5e4; font-size: 9px; font-weight: 700; letter-spacing: 1.3px; }
+.eyebrow span { padding: 0 4px; color: #f5c451; }
 h1, h2, h3, p { margin-top: 0; }
 h1, h2, h3 { font-family: inherit; }
 h1 { margin-bottom: 7px; color: var(--ink); font-size: 28px; font-weight: 700; letter-spacing: -.8px; }
-.page-description { margin-bottom: 0; color: #77857c; font-size: 12px; }
-.updated-at { display: flex; align-items: center; gap: 8px; padding-bottom: 4px; color: #8a958e; font-size: 10px; white-space: nowrap; }
-.updated-dot { width: 6px; height: 6px; border-radius: 50%; background: #54a977; }
+.page-description { margin-bottom: 0; color: #a4aac7; font-size: 12px; }
+.updated-at { display: flex; align-items: center; gap: 8px; padding-bottom: 4px; color: #a4aac7; font-size: 10px; white-space: nowrap; }
+.updated-dot { width: 6px; height: 6px; border-radius: 50%; background: #3ddc97; }
 
 .alert { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; padding: 12px 14px; border: 1px solid #f1d7d3; border-radius: 8px; color: #984b44; background: #fff7f5; font-size: 11px; }
 .alert-icon { display: grid; width: 18px; height: 18px; place-items: center; border-radius: 50%; color: white; background: #c86a61; font-weight: 700; }
@@ -281,4 +281,108 @@ h2 { margin: 0; color: #25362d; font-size: 15px; font-weight: 700; letter-spacin
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* Abaixo, a superfície unifica a experiência de cassino e preserva o laboratório técnico. Assinatura: Leonardo de Souza da Luz */
+body { background: radial-gradient(circle at 70% -10%, #2a1a54 0, transparent 35%), #090b1b; }
+.workspace-card, .activity-panel, .health-card, .empty-panel, .operation-stat { border-color: #29304b; color: #e8eaff; background: #13182f; box-shadow: 0 14px 32px #03040d55; }
+.workspace-card h2, .health-card h3, .section-heading h2, .empty-panel strong, .operation-stat strong { color: #f3f4ff; }
+.workspace-help, .field-hint, .health-card p, .empty-panel p, .stat-footnote, .process-scope, .health-summary { color: #a4aac7; }
+.workspace-icon { color: #f5c451; background: #29204d; }
+.form-stack label, .read-only-field, .workspace-card dl > div { color: #aeb4d3; }
+.form-stack input, .form-stack select { border-color: #343b5e; color: #f3f4ff; background: #0d1126; }
+.form-stack input:focus, .form-stack select:focus { border-color: #8b68ef; box-shadow: 0 0 0 3px #8b68ef33; }
+.form-stack input::placeholder { color: #69719a; }
+.primary-button { color: #fff; background: linear-gradient(135deg, #7649ed, #5634c4); }
+.primary-button:hover:not(:disabled) { background: linear-gradient(135deg, #8b68ef, #6341d1); }
+.secondary-button { color: #dddffd; border-color: #41486f; background: #1b2140; }
+.secondary-button:hover:not(:disabled) { border-color: #8b68ef; background: #29204d; }
+.warning-button { color: #ffd88a; border-color: #876a32; background: #2e2514; }
+.warning-button:hover:not(:disabled) { background: #3a2e16; }
+.wallet-summary, .submission-result, .transaction-result { border-color: #313858; background: #0d1126; }
+.wallet-summary > div:first-child, .workspace-card dd, .read-only-field strong, .result-heading span { color: #e8eaff; }
+.wallet-summary > div:first-child strong, .result-heading, .submission-result > strong { color: #3ddc97; }
+.ledger-table-wrap, .history-table-wrap { border-color: #313858; }
+.ledger-table th, .ledger-table td, .history-table th, .history-table td { border-color: #29304b; color: #d9dcf5; }
+.ledger-table th, .history-table th { color: #aeb4d3; background: #10142a; }
+.empty-workspace, .history-empty { border-color: #39415f; color: #c3c8e7; background: #10142a; }
+.lookup-tabs { background: #0d1126; }
+.lookup-tabs button { color: #aeb4d3; }
+.lookup-tabs .lookup-active { color: #f3f4ff; background: #5634c4; box-shadow: 0 2px 8px #00000055; }
+.page-footer { border-color: #29304b; color: #979fc2; }
+.footer-lock { color: #f5c451; }
+.message-success, .result-good { color: #8ee8b8; border-color: #236343; background: #112c27; }
+.message-error, .result-bad { color: #ffadb7; border-color: #6f3542; background: #311b25; }
+.notice-box { border-color: #705c2b; color: #ffd88a; background: #2d2515; }
+
+.casino-game { display: grid; gap: 20px; }
+.casino-player-bar { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 1px; overflow: hidden; border: 1px solid #363b66; border-radius: 14px; background: #363b66; box-shadow: 0 12px 28px #00000044; }
+.casino-player-bar > div { display: grid; gap: 5px; min-height: 75px; padding: 16px 19px; background: #151a34; }
+.casino-player-bar span { color: #9ca4c9; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+.casino-player-bar strong { overflow: hidden; color: #f1f2ff; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.casino-player-bar .casino-balance { background: linear-gradient(135deg, #392373, #1d1a4e); }
+.casino-player-bar .casino-balance strong { color: #f6d365; font-size: 19px; }
+.fortune-stage { position: relative; display: grid; min-height: 315px; place-content: center; justify-items: center; gap: 13px; overflow: hidden; border: 1px solid #514181; border-radius: 20px; background: radial-gradient(circle at 50% 40%, #493091 0, #201945 42%, #11152f 75%); box-shadow: inset 0 0 85px #05030f99, 0 22px 48px #00000055; text-align: center; }
+.fortune-stage::before, .fortune-stage::after { position: absolute; width: 270px; height: 270px; border: 1px solid #f5c45155; border-radius: 50%; content: ''; }
+.fortune-stage::before { transform: translate(-170px, 130px); }
+.fortune-stage::after { transform: translate(170px, -130px); }
+.fortune-stage-active { border-color: #f5c451; animation: fortunePulse 1.8s ease-in-out infinite; }
+.fortune-stage p { z-index: 1; margin: 0; color: #f6d365; font-size: 13px; font-weight: 800; letter-spacing: 4px; }
+.fortune-stage h2 { z-index: 1; margin: 0; color: #fff; font-size: 25px; }
+.fortune-stage > span { z-index: 1; color: #c8c8ee; font-size: 12px; }
+.fortune-icons { z-index: 1; display: flex; gap: 18px; align-items: center; font-size: 48px; filter: drop-shadow(0 8px 12px #00000066); }
+.fortune-icons span:nth-child(2) { font-size: 70px; }
+.fortune-lights { z-index: 1; color: #f6d365; font-size: 12px; letter-spacing: 18px; }
+@keyframes fortunePulse { 50% { box-shadow: inset 0 0 85px #05030f99, 0 22px 58px #6e49e855; } }
+.casino-controls { display: grid; grid-template-columns: 1.1fr .9fr; gap: 17px; }
+.casino-control-card { padding: 20px; border: 1px solid #343b64; border-radius: 14px; background: #151a34; box-shadow: 0 12px 25px #00000033; }
+.casino-money-input { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 0 14px; border: 1px solid #595188; border-radius: 10px; background: #0d1126; }
+.casino-money-input span { color: #f6d365; font-size: 13px; font-weight: 750; }
+.casino-money-input input { width: 100%; border: 0; outline: none; color: #fff; background: transparent; font-size: 22px; font-weight: 750; }
+.casino-quick-values { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+.casino-quick-values button { padding: 7px 10px; border: 1px solid #41486f; border-radius: 99px; color: #cfd3ef; background: #1b2140; font-size: 10px; }
+.casino-quick-values button:hover:not(:disabled) { border-color: #f5c451; color: #f6d365; }
+.casino-play-button { width: 100%; min-height: 46px; border: 0; border-radius: 9px; color: #1d1638; background: linear-gradient(135deg, #f6d365, #e6ad36); box-shadow: 0 8px 16px #00000055; font-size: 13px; font-weight: 850; letter-spacing: 1px; }
+.casino-play-button:hover:not(:disabled) { filter: brightness(1.08); }
+.casino-play-button:disabled, .casino-result-actions button:disabled { cursor: not-allowed; opacity: .45; }
+.casino-result-card { display: grid; align-content: start; }
+.casino-result-help { min-height: 38px; margin: 0 0 12px; color: #aeb4d3; font-size: 11px; line-height: 1.55; }
+.casino-prize-input { display: grid; gap: 5px; margin-bottom: 12px; color: #aeb4d3; font-size: 10px; }
+.casino-prize-input input { min-height: 36px; padding: 0 10px; border: 1px solid #41486f; border-radius: 7px; color: #fff; background: #0d1126; }
+.casino-result-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.casino-result-actions button { min-height: 44px; border-radius: 8px; font-size: 12px; font-weight: 800; letter-spacing: .8px; }
+.casino-win-button { border: 1px solid #2a9867; color: #d7ffea; background: linear-gradient(135deg, #1c9f68, #13704c); }
+.casino-loss-button { border: 1px solid #a74758; color: #ffe2e6; background: linear-gradient(135deg, #a24454, #6f283a); }
+.casino-api-result { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 17px; padding: 14px 16px; border: 1px solid #3b4a72; border-radius: 10px; color: #cfd4f5; background: #11182e; font-size: 11px; }
+.casino-api-result strong { color: #f6d365; }
+.casino-empty { display: grid; justify-items: center; gap: 8px; padding: 55px 25px; border: 1px dashed #4a4b76; border-radius: 18px; background: #12162d; text-align: center; }
+.casino-empty h2 { margin: 0; color: #f0f1ff; font-size: 18px; }
+.casino-empty p { margin: 0; color: #aeb4d3; font-size: 12px; }
+.casino-empty-icon { color: #f6d365; font-size: 40px; }
+
+.scenario-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.scenario-card { display: grid; align-content: start; gap: 10px; padding: 15px; border: 1px solid #313858; border-radius: 9px; background: #0e1329; }
+.scenario-card h3 { margin: 0; color: #e9eaff; font-size: 12px; }
+.scenario-card p { min-height: 46px; margin: 0; color: #aeb4d3; font-size: 10px; line-height: 1.5; }
+.scenario-card span { min-height: 30px; color: #f6d365; font-size: 9px; line-height: 1.45; }
+.scenario-card button { margin-top: auto; }
+.scenario-result { display: grid; gap: 8px; margin-top: 16px; padding: 15px; border: 1px solid #315d5d; border-radius: 9px; color: #cde9e8; background: #10272d; font-size: 10px; }
+.scenario-result strong { color: #7ff3bc; font-size: 12px; }
+.scenario-result p { margin: 0; line-height: 1.5; }
+.scenario-result ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; }
+.history-status-processed { color: #98f1bf; background: #173c32; }
+.history-status-rejected { color: #ffb3be; background: #452130; }
+.history-status-pending, .history-status-pending_reference { color: #ffe09a; background: #3f341b; }
+.round-card { border-color: #313858; background: #10152d; }
+.round-card-heading { border-color: #29304b; }
+.round-card-heading h3, .round-transaction strong { color: #e8eaff; }
+.round-transaction { border-color: #29304b; color: #b8bfdd; }
+.history-secondary, .round-transaction time, .history-count { color: #9ea6c6; }
+
+@media (max-width: 700px) {
+  .casino-player-bar, .casino-controls, .scenario-grid { grid-template-columns: 1fr; }
+  .casino-player-bar > div { min-height: 57px; }
+  .fortune-stage { min-height: 275px; }
+  .fortune-icons { font-size: 39px; }
+  .fortune-icons span:nth-child(2) { font-size: 58px; }
 }
