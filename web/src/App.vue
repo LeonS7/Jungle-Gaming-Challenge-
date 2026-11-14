@@ -225,7 +225,7 @@ onUnmounted(() => {
 
     <main id="inicio" class="main-area">
       <header class="topbar">
-        <div class="breadcrumb">Jungle Gaming <span>/</span> {{ sectionLabels[activeSection] }}</div>
+        <div class="breadcrumb">Jungle Gaming Challenge <span>/</span> {{ sectionLabels[activeSection] }}</div>
         <div class="topbar-actions">
           <span class="environment-badge"><span></span> LOCAL</span>
           <button
