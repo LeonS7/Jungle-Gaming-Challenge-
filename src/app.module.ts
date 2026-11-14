@@ -11,6 +11,7 @@ import { GetWagerTransaction } from './application/wagering/get-wager-transactio
 import { OpenWallet } from './application/wallets/open-wallet.js';
 import { GetWallet } from './application/wallets/get-wallet.js';
 import { GetWalletLedger } from './application/wallets/get-wallet-ledger.js';
+import { ReconcileWallet } from './application/wallets/reconcile-wallet.js';
 import type { ApplicationConfig } from './config/application-config.js';
 import { APPLICATION_CONFIG } from './config/config.constants.js';
 import { createMikroOrmOptions } from './infrastructure/persistence/mikro-orm.options.js';
@@ -28,6 +29,10 @@ import { PostgresOutboxPublishing } from './infrastructure/persistence/postgres-
 import { PublishOutboxMessages } from './application/outbox/publish-outbox-messages.js';
 import { SqsOutboxEventPublisher } from './infrastructure/messaging/sqs-outbox-event-publisher.js';
 import { OutboxPublisherWorker } from './infrastructure/messaging/outbox-publisher-worker.js';
+import { PostgresWalletReconciliation } from './infrastructure/persistence/postgres-wallet-reconciliation.js';
+import { WalletReconciliationMetrics } from './infrastructure/observability/wallet-reconciliation-metrics.js';
+import { MetricsController } from './presentation/observability/metrics.controller.js';
+import { PendingReferenceWorker } from './infrastructure/messaging/pending-reference-worker.js';
 
 @Module({})
 export class AppModule {
@@ -46,10 +51,12 @@ export class AppModule {
         WageringController,
         WageringQueriesController,
         WalletsController,
+        MetricsController,
       ],
       providers: [
         { provide: APPLICATION_CONFIG, useValue: config },
         HealthService,
+        WalletReconciliationMetrics,
         {
           provide: ProcessWager,
           inject: [MikroORM],
@@ -73,6 +80,17 @@ export class AppModule {
           inject: [MikroORM],
           useFactory: (orm: MikroORM) =>
             new GetWalletLedger(new PostgresWalletRead(orm, schema)),
+        },
+        {
+          provide: ReconcileWallet,
+          inject: [MikroORM, WalletReconciliationMetrics],
+          useFactory: (
+            orm: MikroORM,
+            metrics: WalletReconciliationMetrics,
+          ) => new ReconcileWallet(
+            new PostgresWalletReconciliation(orm, schema),
+            metrics,
+          ),
         },
         {
           provide: OpenWallet,
@@ -99,6 +117,7 @@ export class AppModule {
               },
               WagerSqsConsumer,
               OutboxPublisherWorker,
+              PendingReferenceWorker,
             ]
           : []),
       ],

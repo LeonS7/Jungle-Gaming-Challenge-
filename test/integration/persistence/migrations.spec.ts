@@ -196,14 +196,25 @@ test('migration PostgreSQL aplica, protege invariantes e reverte o schema', asyn
       kind: 'ROLLBACK',
       referenceExternalTransactionId: 'aposta-ainda-nao-recebida',
     });
+    await expect(scopedOrm.em.getConnection().execute(
+      `update ${table(schema, 'wager_transactions')}
+       set "status" = 'PENDING_REFERENCE' where "id" = ?`,
+      [pendingId],
+    )).rejects.toThrow();
     await scopedOrm.em.getConnection().execute(
-      `update ${table(schema, 'wager_transactions')} set "status" = 'PENDING_REFERENCE' where "id" = ?`,
+      `update ${table(schema, 'wager_transactions')}
+       set "status" = 'PENDING_REFERENCE',
+           "reference_next_attempt_at" = now() + interval '1 second',
+           "reference_expires_at" = now() + interval '24 hours'
+       where "id" = ?`,
       [pendingId],
     );
     await scopedOrm.em.getConnection().execute(
       `update ${table(schema, 'wager_transactions')}
        set "status" = 'REJECTED', "failure_code" = 'REFERENCE_NOT_FOUND',
-           "result_balance" = '100.00', "result_currency" = 'BRL' where "id" = ?`,
+           "result_balance" = '100.00', "result_currency" = 'BRL',
+           "reference_next_attempt_at" = null, "reference_expires_at" = null
+       where "id" = ?`,
       [pendingId],
     );
     await expect(
@@ -353,6 +364,19 @@ test('migration PostgreSQL aplica, protege invariantes e reverte o schema', asyn
     );
     expect(rolledBackWallet[0]).toEqual({ balance: '100.00' });
     expect(rolledBackLedger).toHaveLength(0);
+
+    await scopedOrm.migrator.down();
+    const removedReferenceRetryColumns = await scopedOrm.em.getConnection().execute(
+      'select column_name from information_schema.columns where table_schema = ? and table_name = ? and column_name in (?, ?, ?)',
+      [
+        schema,
+        'wager_transactions',
+        'reference_retry_attempts',
+        'reference_next_attempt_at',
+        'reference_expires_at',
+      ],
+    );
+    expect(removedReferenceRetryColumns).toHaveLength(0);
 
     await scopedOrm.migrator.down();
     const remainingRows = await scopedOrm.em.getConnection().execute(

@@ -13,6 +13,7 @@ import { Migration20261113010000_AddWagerResultSnapshot } from './migrations/Mig
 import { Migration20261113020000_StrengthenWagerResultSnapshot } from './migrations/Migration20261113020000_StrengthenWagerResultSnapshot.js';
 import { Migration20261113030000_AddTransactionalOutbox } from './migrations/Migration20261113030000_AddTransactionalOutbox.js';
 import { Migration20261113040000_AddInboxMessages } from './migrations/Migration20261113040000_AddInboxMessages.js';
+import { Migration20261113050000_AddPendingReferenceRetry } from './migrations/Migration20261113050000_AddPendingReferenceRetry.js';
 import { WalletLedgerEntryRecord } from './entities/wallet-ledger-entry-record.entity.js';
 import { WalletRecord } from './entities/wallet-record.entity.js';
 import { WagerTransactionRecord } from './entities/wager-transaction-record.entity.js';
@@ -40,6 +41,7 @@ export function createMikroOrmOptions(
         Migration20261113020000_StrengthenWagerResultSnapshot,
         Migration20261113030000_AddTransactionalOutbox,
         Migration20261113040000_AddInboxMessages,
+        Migration20261113050000_AddPendingReferenceRetry,
       ],
       transactional: true,
       allOrNothing: true,

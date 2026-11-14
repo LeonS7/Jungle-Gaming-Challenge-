@@ -11,6 +11,7 @@ import {
   WagerTransactionStatus,
 } from '../../domain/wagering/wager-transaction.js';
 import { WalletLedgerEntry } from '../../domain/ledger/wallet-ledger-entry.js';
+import type { PendingReferenceRetry } from '../../domain/wagering/pending-reference-retry.js';
 import type { OutboxMessageToAppend } from '../outbox/integration-events.js';
 
 export interface PersistedWagerResult {
@@ -27,6 +28,12 @@ export type InboxMessageRegistration =
   | 'PAYLOAD_CONFLICT'
   | 'INCOMPLETE';
 
+export interface PendingReferenceWorkItem {
+  readonly transaction: WagerTransaction;
+  readonly retry: PendingReferenceRetry;
+  readonly databaseNow: Date;
+}
+
 export interface WagerTransactionSession {
   registerInboxMessage(message: InboxMessage): Promise<InboxMessageRegistration>;
   markInboxMessageProcessed(message: InboxMessage): Promise<void>;
@@ -42,6 +49,12 @@ export interface WagerTransactionSession {
   ): Promise<boolean>;
   insertPendingTransaction(transaction: WagerTransaction): Promise<void>;
   savePendingReference(transaction: WagerTransaction): Promise<void>;
+  findDuePendingReferences(limit: number): Promise<readonly PendingReferenceWorkItem[]>;
+  schedulePendingReferenceRetry(
+    transactionId: string,
+    attempts: number,
+    delaySeconds: number,
+  ): Promise<void>;
   saveWallet(wallet: Wallet): Promise<void>;
   insertLedgerEntry(entry: WalletLedgerEntry): Promise<void>;
   insertOutboxMessage(message: OutboxMessageToAppend): Promise<void>;

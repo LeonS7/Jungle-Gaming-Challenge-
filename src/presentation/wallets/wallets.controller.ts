@@ -23,6 +23,7 @@ import {
   InvalidWalletLedgerCursorError,
 } from '../../application/wallets/get-wallet-ledger.js';
 import { OpenWallet } from '../../application/wallets/open-wallet.js';
+import { ReconcileWallet } from '../../application/wallets/reconcile-wallet.js';
 import {
   WalletAlreadyExistsError,
   WalletPersistenceInvariantError,
@@ -83,6 +84,7 @@ export class WalletsController {
     private readonly openWallet: OpenWallet,
     private readonly getWallet: GetWallet,
     private readonly getWalletLedger: GetWalletLedger,
+    private readonly reconcileWallet: ReconcileWallet,
   ) {}
 
   private requireWalletId(walletId: string): string {
@@ -154,6 +156,26 @@ export class WalletsController {
       );
     } catch (error) {
       throw this.mapReadError(error, 'consultar');
+    }
+  }
+
+  @Post(':walletId/reconciliation')
+  @HttpCode(HttpStatus.OK)
+  async reconcile(@Param('walletId') walletId: string) {
+    try {
+      const result = await this.reconcileWallet.execute(
+        this.requireWalletId(walletId),
+      );
+      if (!result.consistent) {
+        Logger.warn(JSON.stringify({
+          event: 'wallet.reconciliation.divergence',
+          walletId: result.walletId,
+          checkedEntries: result.checkedEntries,
+        }), WalletsController.name);
+      }
+      return result;
+    } catch (error) {
+      throw this.mapReadError(error, 'reconciliar');
     }
   }
 

@@ -16,6 +16,10 @@ import {
   WagerTransactionStatus,
   type WagerTransactionState,
 } from '../../domain/wagering/wager-transaction.js';
+import {
+  PendingReferenceRetry,
+  PENDING_REFERENCE_TTL_SECONDS,
+} from '../../domain/wagering/pending-reference-retry.js';
 import { WagerPersistenceInvariantError } from '../../application/wagering/process-wager.js';
 import type { OutboxMessageToAppend } from '../../application/outbox/integration-events.js';
 import {
@@ -24,6 +28,7 @@ import {
   type WagerTransactionSession,
   type InboxMessageRegistration,
   type PersistedWagerResult,
+  type PendingReferenceWorkItem,
 } from '../../application/wagering/wager-processing.port.js';
 import { PersistenceUnavailableError } from '../../application/shared/persistence-unavailable.error.js';
 import {
@@ -70,6 +75,13 @@ interface ReferenceWagerRow {
   readonly failureCode: string | null;
   readonly createdAt: Date | string;
   readonly processedAt: Date | string | null;
+}
+
+interface PendingReferenceRow extends ReferenceWagerRow {
+  readonly retryAttempts: number;
+  readonly nextAttemptAt: Date | string;
+  readonly expiresAt: Date | string;
+  readonly databaseNow: Date | string;
 }
 
 function parseDatabaseDate(value: Date | string): Date {
@@ -346,14 +358,119 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
 
     const updated = await this.execute(
       `update ${qualifiedTable(this.schema, 'wager_transactions')}
-       set "status" = 'PENDING_REFERENCE'
+       set "status" = 'PENDING_REFERENCE',
+           "reference_retry_attempts" = 0,
+           "reference_next_attempt_at" = now() + (? * interval '1 second'),
+           "reference_expires_at" = now() + (? * interval '1 second')
        where "id" = ? and "status" = 'PENDING'
        returning "id"`,
-      [transaction.id],
+      [1, PENDING_REFERENCE_TTL_SECONDS, transaction.id],
     );
     if (updated.length !== 1) {
       throw new WagerPersistenceInvariantError(
         'A transação pendente desapareceu antes de aguardar a referência.',
+      );
+    }
+  }
+
+  async findDuePendingReferences(
+    limit: number,
+  ): Promise<readonly PendingReferenceWorkItem[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new WagerPersistenceInvariantError(
+        'O lote de referências pendentes deve conter de 1 a 100 registros.',
+      );
+    }
+    const rows = await this.execute(
+      `select
+        "id",
+        "provider_id" as "providerId",
+        "external_transaction_id" as "externalTransactionId",
+        "idempotency_key" as "idempotencyKey",
+        "payload_hash" as "payloadHash",
+        "wallet_id" as "walletId",
+        "player_id" as "playerId",
+        "currency"::text as "currency",
+        "round_id" as "roundId",
+        "game_id" as "gameId",
+        "kind",
+        "amount"::text as "amount",
+        "reference_external_transaction_id" as "referenceExternalTransactionId",
+        "reference_transaction_id" as "referenceTransactionId",
+        "status",
+        "failure_code" as "failureCode",
+        "created_at" as "createdAt",
+        "processed_at" as "processedAt",
+        "reference_retry_attempts" as "retryAttempts",
+        "reference_next_attempt_at" as "nextAttemptAt",
+        "reference_expires_at" as "expiresAt",
+        now() as "databaseNow"
+       from ${qualifiedTable(this.schema, 'wager_transactions')}
+       where "status" = 'PENDING_REFERENCE'
+         and "reference_next_attempt_at" <= now()
+       order by "wallet_id", "reference_next_attempt_at", "id"
+       limit ?
+       for update skip locked`,
+      [limit],
+    );
+
+    return (rows as unknown as PendingReferenceRow[]).map((row) => {
+      const currency = row.currency.trim();
+      const state: WagerTransactionState = {
+        id: row.id,
+        providerId: row.providerId,
+        externalTransactionId: row.externalTransactionId,
+        idempotencyKey: row.idempotencyKey,
+        payloadHash: row.payloadHash,
+        walletId: row.walletId,
+        playerId: row.playerId,
+        roundId: row.roundId,
+        gameId: row.gameId,
+        kind: row.kind as WagerTransactionKind,
+        money: Money.from({ amount: row.amount, currency }),
+        ...(row.referenceExternalTransactionId !== null
+          ? { referenceExternalTransactionId: row.referenceExternalTransactionId }
+          : {}),
+        createdAt: parseDatabaseDate(row.createdAt),
+        status: row.status as WagerTransactionStatus,
+        ...(row.referenceTransactionId !== null
+          ? { referenceTransactionId: row.referenceTransactionId }
+          : {}),
+        ...(row.failureCode !== null ? { failureCode: row.failureCode } : {}),
+        ...(row.processedAt !== null
+          ? { processedAt: parseDatabaseDate(row.processedAt) }
+          : {}),
+      };
+      return {
+        transaction: WagerTransaction.rehydrate(state),
+        retry: PendingReferenceRetry.rehydrate({
+          attempts: row.retryAttempts,
+          nextAttemptAt: parseDatabaseDate(row.nextAttemptAt),
+          expiresAt: parseDatabaseDate(row.expiresAt),
+        }),
+        databaseNow: parseDatabaseDate(row.databaseNow),
+      };
+    });
+  }
+
+  async schedulePendingReferenceRetry(
+    transactionId: string,
+    attempts: number,
+    delaySeconds: number,
+  ): Promise<void> {
+    const updated = await this.execute(
+      `update ${qualifiedTable(this.schema, 'wager_transactions')}
+       set "reference_retry_attempts" = ?,
+           "reference_next_attempt_at" = least(
+             now() + (? * interval '1 second'), "reference_expires_at"
+           )
+       where "id" = ? and "status" = 'PENDING_REFERENCE'
+       returning "id"`,
+      [attempts, delaySeconds, transactionId],
+    );
+    if (updated.length !== 1) {
+      throw new WagerPersistenceInvariantError(
+        'A referência pendente desapareceu antes do agendamento da próxima tentativa.',
       );
     }
   }
@@ -429,7 +546,8 @@ class PostgresWagerTransactionSession implements WagerTransactionSession {
     const updated = await this.execute(
       `update ${qualifiedTable(this.schema, 'wager_transactions')}
        set "status" = ?, "reference_transaction_id" = ?, "failure_code" = ?,
-           "processed_at" = ?, "result_balance" = ?, "result_currency" = ?
+           "processed_at" = ?, "result_balance" = ?, "result_currency" = ?,
+           "reference_next_attempt_at" = null, "reference_expires_at" = null
        where "id" = ?
        returning "id"`,
       [

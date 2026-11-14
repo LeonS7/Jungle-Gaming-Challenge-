@@ -804,6 +804,161 @@ test('referência ausente fica pendente, gera evento e reproduz o mesmo status',
   });
 });
 
+test('worker resolve uma referência fora de ordem uma única vez entre instâncias concorrentes', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const processWager = new ProcessWager(persistence);
+    const bet = createWager(playerId, walletId, {
+      externalTransactionId: 'aposta-referencia-tardia',
+      idempotencyKey: 'chave-aposta-referencia-tardia',
+      payloadHash: 'hash-aposta-referencia-tardia',
+      money: Money.from({ amount: '10.00', currency: 'BRL' }),
+    });
+    const win = createWager(playerId, walletId, {
+      externalTransactionId: 'premio-referencia-tardia',
+      idempotencyKey: 'chave-premio-referencia-tardia',
+      payloadHash: 'hash-premio-referencia-tardia',
+      kind: WagerTransactionKind.Win,
+      referenceExternalTransactionId: bet.externalTransactionId,
+      money: Money.from({ amount: '5.00', currency: 'BRL' }),
+    });
+
+    const pending = await processWager.execute(win);
+    await processWager.execute(bet);
+    await orm.em.getConnection().execute(
+      `update ${table(schema, 'wager_transactions')}
+       set "reference_next_attempt_at" = now() - interval '1 second'
+       where "id" = ?`,
+      [pending.transactionId],
+    );
+
+    const processors = Array.from(
+      { length: 3 },
+      () => new ProcessWager(persistence),
+    );
+    const results = await Promise.all(
+      processors.map((processor) => processor.executeDuePendingReferences()),
+    );
+    const transactionRows = await orm.em.getConnection().execute(
+      `select "status", "reference_transaction_id" as "referenceTransactionId",
+              "result_balance"::text as "resultBalance"
+       from ${table(schema, 'wager_transactions')} where "id" = ?`,
+      [pending.transactionId],
+    );
+    const events = await orm.em.getConnection().execute(
+      `select "event_type" as "eventType", "sequence_number" as "sequenceNumber"
+       from ${table(schema, 'outbox_messages')}
+       where "transaction_id" = ? order by "sequence_number"`,
+      [pending.transactionId],
+    );
+    const walletRows = await orm.em.getConnection().execute(
+      `select "balance"::text as "balance", "version"
+       from ${table(schema, 'wallets')} where "id" = ?`,
+      [walletId],
+    );
+    const winLedger = await orm.em.getConnection().execute(
+      `select "direction", "amount"::text as "amount",
+              "balance_before"::text as "balanceBefore",
+              "balance_after"::text as "balanceAfter"
+       from ${table(schema, 'wallet_ledger_entries')}
+       where "transaction_id" = ?`,
+      [pending.transactionId],
+    );
+
+    expect(results.reduce((count, result) => count + result.claimed, 0)).toBe(1);
+    expect(results.reduce((count, result) => count + result.processed, 0)).toBe(1);
+    expect(transactionRows).toEqual([{
+      status: 'PROCESSED',
+      referenceTransactionId: expect.any(String),
+      resultBalance: '95.00',
+    }]);
+    expect(events).toEqual([
+      { eventType: 'WagerTransactionPendingReference', sequenceNumber: 1 },
+      { eventType: 'WagerTransactionProcessed', sequenceNumber: 2 },
+      { eventType: 'WalletBalanceChanged', sequenceNumber: 3 },
+    ]);
+    expect(walletRows).toEqual([{ balance: '95.00', version: 3 }]);
+    expect(winLedger).toEqual([{
+      direction: 'CREDIT',
+      amount: '5.00',
+      balanceBefore: '90.00',
+      balanceAfter: '95.00',
+    }]);
+  });
+});
+
+test('worker agenda retry durável e rejeita a referência ao atingir o TTL', async () => {
+  await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
+    const processWager = new ProcessWager(persistence);
+    const win = createWager(playerId, walletId, {
+      externalTransactionId: 'premio-referencia-expirada',
+      idempotencyKey: 'chave-premio-referencia-expirada',
+      payloadHash: 'hash-premio-referencia-expirada',
+      kind: WagerTransactionKind.Win,
+      referenceExternalTransactionId: 'aposta-que-nao-chegou',
+      money: Money.from({ amount: '5.00', currency: 'BRL' }),
+    });
+    const pending = await processWager.execute(win);
+    await orm.em.getConnection().execute(
+      `update ${table(schema, 'wager_transactions')}
+       set "reference_next_attempt_at" = now() - interval '1 second'
+       where "id" = ?`,
+      [pending.transactionId],
+    );
+
+    const retryResult = await processWager.executeDuePendingReferences();
+    const retryRows = await orm.em.getConnection().execute(
+      `select "reference_retry_attempts" as "attempts",
+              "reference_next_attempt_at" > now() as "scheduledInFuture"
+       from ${table(schema, 'wager_transactions')} where "id" = ?`,
+      [pending.transactionId],
+    );
+    expect(retryResult).toMatchObject({ claimed: 1, retried: 1 });
+    expect(retryRows).toEqual([{ attempts: 1, scheduledInFuture: true }]);
+
+    await orm.em.getConnection().execute(
+      `update ${table(schema, 'wager_transactions')}
+       set "reference_next_attempt_at" = now() - interval '3 seconds',
+           "reference_expires_at" = now() - interval '2 seconds'
+       where "id" = ?`,
+      [pending.transactionId],
+    );
+    const expiryResult = await processWager.executeDuePendingReferences();
+    const transactionRows = await orm.em.getConnection().execute(
+      `select "status", "failure_code" as "failureCode",
+              "result_balance"::text as "resultBalance",
+              "reference_next_attempt_at" as "nextAttemptAt",
+              "reference_expires_at" as "expiresAt"
+       from ${table(schema, 'wager_transactions')} where "id" = ?`,
+      [pending.transactionId],
+    );
+    const events = await orm.em.getConnection().execute(
+      `select "event_type" as "eventType", "sequence_number" as "sequenceNumber"
+       from ${table(schema, 'outbox_messages')}
+       where "transaction_id" = ? order by "sequence_number"`,
+      [pending.transactionId],
+    );
+    const ledgerRows = await orm.em.getConnection().execute(
+      `select "id" from ${table(schema, 'wallet_ledger_entries')}
+       where "transaction_id" = ?`,
+      [pending.transactionId],
+    );
+
+    expect(expiryResult).toMatchObject({ claimed: 1, rejected: 1 });
+    expect(transactionRows).toEqual([{
+      status: 'REJECTED',
+      failureCode: 'REFERENCE_EXPIRED',
+      resultBalance: '100.00',
+      nextAttemptAt: null,
+      expiresAt: null,
+    }]);
+    expect(events).toEqual([
+      { eventType: 'WagerTransactionPendingReference', sequenceNumber: 1 },
+      { eventType: 'WagerTransactionRejected', sequenceNumber: 2 },
+    ]);
+    expect(ledgerRows).toHaveLength(0);
+  });
+});
+
 test('referência de tipo incorreto é rejeitada e duas reversões concorrentes só aplicam uma', async () => {
   await withPersistence(async ({ orm, schema, persistence, playerId, walletId }) => {
     const processWager = new ProcessWager(persistence);

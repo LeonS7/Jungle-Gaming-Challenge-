@@ -56,6 +56,15 @@ interface WagerReadHttpResponse {
   readonly code?: string;
 }
 
+interface WalletReconciliationHttpResponse {
+  readonly walletId?: string;
+  readonly storedBalance?: { readonly amount: string; readonly currency: string };
+  readonly calculatedBalance?: { readonly amount: string; readonly currency: string };
+  readonly difference?: { readonly amount: string; readonly currency: string };
+  readonly consistent?: boolean;
+  readonly checkedEntries?: number;
+}
+
 function table(schema: string, name: string): string {
   return `"${schema}"."${name}"`;
 }
@@ -793,6 +802,51 @@ test('GET wallets retorna a carteira e informa quando ela não existe', async ()
     const invalidBody = await invalid.json() as HttpResponseBody;
     expect(invalid.status).toBe(400);
     expect(invalidBody.code).toBe('INVALID_REQUEST');
+  });
+});
+
+test('POST reconciliação informa divergência e incrementa a métrica operacional', async () => {
+  await withHttpApplication(async ({ baseUrl, orm, schema, walletId }) => {
+    const consistentResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/reconciliation`,
+      { method: 'POST' },
+    );
+    const consistentResult = await consistentResponse.json() as WalletReconciliationHttpResponse;
+    expect(consistentResponse.status).toBe(200);
+    expect(consistentResult).toEqual({
+      walletId,
+      storedBalance: { amount: '100.00', currency: 'BRL' },
+      calculatedBalance: { amount: '100.00', currency: 'BRL' },
+      difference: { amount: '0.00', currency: 'BRL' },
+      consistent: true,
+      checkedEntries: 1,
+    });
+
+    await orm.em.getConnection().execute(
+      `update ${table(schema, 'wallets')}
+       set "balance" = "balance" + 1.00, "version" = "version" + 1
+       where "id" = ?`,
+      [walletId],
+    );
+
+    const reconciliationResponse = await fetch(
+      `${baseUrl}/wallets/${walletId}/reconciliation`,
+      { method: 'POST' },
+    );
+    const result = await reconciliationResponse.json() as WalletReconciliationHttpResponse;
+    const metricsResponse = await fetch(`${baseUrl}/metrics`);
+    const metrics = await metricsResponse.text();
+
+    expect(reconciliationResponse.status).toBe(200);
+    expect(result).toEqual({
+      walletId,
+      storedBalance: { amount: '101.00', currency: 'BRL' },
+      calculatedBalance: { amount: '100.00', currency: 'BRL' },
+      difference: { amount: '1.00', currency: 'BRL' },
+      consistent: false,
+      checkedEntries: 1,
+    });
+    expect(metrics).toContain('wallet_reconciliation_divergences_total 1');
   });
 });
 

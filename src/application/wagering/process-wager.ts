@@ -285,134 +285,14 @@ export class ProcessWager {
           reference = candidate;
         }
 
-        let direction: LedgerDirection | undefined;
-        try {
-          direction = transaction.ledgerDirectionFor(reference);
-        } catch (error) {
-          if (!(error instanceof InvalidWagerTransactionError)) {
-            throw error;
-          }
-          return complete(await this.reject(
-            session,
-            transaction,
-            wallet,
-            occurredAt,
-            'INVALID_REFERENCE',
-          ));
-        }
-
-        if (
-          reference &&
-          (transaction.kind === WagerTransactionKind.Refund ||
-            transaction.kind === WagerTransactionKind.Rollback) &&
-          await session.hasProcessedReversal(reference.id, transaction.kind)
-        ) {
-          return complete(await this.reject(
-            session,
-            transaction,
-            wallet,
-            occurredAt,
-            'ALREADY_REVERSED',
-          ));
-        }
-
-        let entry: WalletLedgerEntry | undefined;
-
-        try {
-          // A direção vem do domínio; LOSS não movimenta saldo e nem cria lançamento.
-          if (transaction.affectsBalance()) {
-            if (direction === LedgerDirection.Debit) {
-              entry = wallet.debit({
-                ledgerEntryId: randomUUID(),
-                transactionId: transaction.id,
-                money: command.money,
-                occurredAt,
-              });
-            } else if (direction === LedgerDirection.Credit) {
-              entry = wallet.credit({
-                ledgerEntryId: randomUUID(),
-                transactionId: transaction.id,
-                money: command.money,
-                occurredAt,
-              });
-            }
-          }
-        } catch (error) {
-          if (!(error instanceof InsufficientWalletBalanceError)) {
-            throw error;
-          }
-          if (transaction.kind === WagerTransactionKind.Bet) {
-            return complete(await this.reject(
-              session,
-              transaction,
-              wallet,
-              occurredAt,
-              'INSUFFICIENT_FUNDS',
-            ));
-          }
-          if (
-            transaction.kind === WagerTransactionKind.Refund ||
-            transaction.kind === WagerTransactionKind.Rollback
-          ) {
-            return complete(await this.reject(
-              session,
-              transaction,
-              wallet,
-              occurredAt,
-              'REVERSAL_INSUFFICIENT_FUNDS',
-            ));
-          }
-          throw error;
-        }
-
-        if (entry) {
-          await session.saveWallet(wallet);
-          await session.insertLedgerEntry(entry);
-        }
-        transaction.markProcessed(reference?.id, occurredAt);
-        await session.saveTransactionResult(transaction, wallet.balance);
-        const processedEvent = WagerTransactionProcessed.create({
-          eventId: randomUUID(),
-          aggregateId: transaction.id,
-          correlationId: transaction.id,
+        return complete(await this.applyResolvedTransaction(
+          session,
+          transaction,
+          wallet,
+          reference,
           occurredAt,
-          data: transactionEventData(transaction, wallet.balance),
-        });
-        await session.insertOutboxMessage({
-          transactionId: transaction.id,
-          sequenceNumber: 1,
-          event: processedEvent.toJSON(),
-        });
-
-        if (entry) {
-          const balanceChangedEvent = WalletBalanceChanged.create({
-            eventId: randomUUID(),
-            aggregateId: wallet.id,
-            correlationId: transaction.id,
-            occurredAt,
-            data: {
-              walletId: wallet.id,
-              transactionId: transaction.id,
-              direction: entry.direction,
-              money: entry.money.toJSON(),
-              balanceBefore: entry.balanceBefore.toJSON(),
-              balanceAfter: entry.balanceAfter.toJSON(),
-              walletVersion: wallet.version,
-            },
-          });
-          await session.insertOutboxMessage({
-            transactionId: transaction.id,
-            sequenceNumber: 2,
-            event: balanceChangedEvent.toJSON(),
-          });
-        }
-
-        return complete({
-          transactionId: transaction.id,
-          status: WagerTransactionStatus.Processed,
-          balance: wallet.balance,
-          idempotentReplay: false,
-        });
+          1,
+        ));
       });
     } catch (error) {
       if (!(error instanceof WagerIdentityAlreadyExistsError)) {
@@ -438,6 +318,235 @@ export class ProcessWager {
       }
       return { kind: 'RESULT', result };
     }
+  }
+
+  async executeDuePendingReferences(
+    limit = 10,
+  ): Promise<{
+    readonly claimed: number;
+    readonly processed: number;
+    readonly rejected: number;
+    readonly retried: number;
+  }> {
+    return this.persistence.transaction(async (session) => {
+      const workItems = await session.findDuePendingReferences(limit);
+      let processed = 0;
+      let rejected = 0;
+      let retried = 0;
+
+      for (const workItem of workItems) {
+        const { transaction, retry, databaseNow } = workItem;
+        const externalReferenceId = transaction.referenceExternalTransactionId;
+        if (!externalReferenceId) {
+          throw new WagerPersistenceInvariantError(
+            'Uma transação PENDING_REFERENCE precisa manter a referência externa.',
+          );
+        }
+
+        if (retry.isExpired(databaseNow)) {
+          const wallet = await session.findWalletForUpdate(transaction.walletId);
+          if (!wallet) {
+            throw new WagerWalletNotFoundError(transaction.walletId);
+          }
+          await this.reject(
+            session,
+            transaction,
+            wallet,
+            databaseNow,
+            'REFERENCE_EXPIRED',
+            2,
+          );
+          rejected += 1;
+          continue;
+        }
+
+        const candidate = await session.findReference(
+          transaction.providerId,
+          externalReferenceId,
+        );
+        if (
+          !candidate ||
+          candidate.status === WagerTransactionStatus.Pending ||
+          candidate.status === WagerTransactionStatus.PendingReference
+        ) {
+          const schedule = retry.scheduleRetry(databaseNow);
+          await session.schedulePendingReferenceRetry(
+            transaction.id,
+            schedule.attempts,
+            schedule.delaySeconds,
+          );
+          retried += 1;
+          continue;
+        }
+
+        const wallet = await session.findWalletForUpdate(transaction.walletId);
+        if (!wallet) {
+          throw new WagerWalletNotFoundError(transaction.walletId);
+        }
+        if (wallet.playerId !== transaction.playerId) {
+          throw new WagerWalletOwnerMismatchError();
+        }
+        if (wallet.currency !== transaction.money.currency) {
+          throw new WagerCurrencyMismatchError(wallet.currency, transaction.money.currency);
+        }
+
+        const result = await this.applyResolvedTransaction(
+          session,
+          transaction,
+          wallet,
+          candidate,
+          databaseNow,
+          2,
+        );
+        if (result.status === WagerTransactionStatus.Processed) {
+          processed += 1;
+        } else {
+          rejected += 1;
+        }
+      }
+
+      return { claimed: workItems.length, processed, rejected, retried };
+    });
+  }
+
+  private async applyResolvedTransaction(
+    session: WagerTransactionSession,
+    transaction: WagerTransaction,
+    wallet: Wallet,
+    reference: WagerTransaction | undefined,
+    occurredAt: Date,
+    processedSequence: number,
+  ): Promise<ProcessWagerResult> {
+    let direction: LedgerDirection | undefined;
+    try {
+      direction = transaction.ledgerDirectionFor(reference);
+    } catch (error) {
+      if (!(error instanceof InvalidWagerTransactionError)) {
+        throw error;
+      }
+      return this.reject(
+        session,
+        transaction,
+        wallet,
+        occurredAt,
+        'INVALID_REFERENCE',
+        processedSequence,
+      );
+    }
+
+    if (
+      reference &&
+      (transaction.kind === WagerTransactionKind.Refund ||
+        transaction.kind === WagerTransactionKind.Rollback) &&
+      await session.hasProcessedReversal(reference.id, transaction.kind)
+    ) {
+      return this.reject(
+        session,
+        transaction,
+        wallet,
+        occurredAt,
+        'ALREADY_REVERSED',
+        processedSequence,
+      );
+    }
+
+    let entry: WalletLedgerEntry | undefined;
+    try {
+      if (transaction.affectsBalance()) {
+        if (direction === LedgerDirection.Debit) {
+          entry = wallet.debit({
+            ledgerEntryId: randomUUID(),
+            transactionId: transaction.id,
+            money: transaction.money,
+            occurredAt,
+          });
+        } else if (direction === LedgerDirection.Credit) {
+          entry = wallet.credit({
+            ledgerEntryId: randomUUID(),
+            transactionId: transaction.id,
+            money: transaction.money,
+            occurredAt,
+          });
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof InsufficientWalletBalanceError)) {
+        throw error;
+      }
+      if (transaction.kind === WagerTransactionKind.Bet) {
+        return this.reject(
+          session,
+          transaction,
+          wallet,
+          occurredAt,
+          'INSUFFICIENT_FUNDS',
+          processedSequence,
+        );
+      }
+      if (
+        transaction.kind === WagerTransactionKind.Refund ||
+        transaction.kind === WagerTransactionKind.Rollback
+      ) {
+        return this.reject(
+          session,
+          transaction,
+          wallet,
+          occurredAt,
+          'REVERSAL_INSUFFICIENT_FUNDS',
+          processedSequence,
+        );
+      }
+      throw error;
+    }
+
+    if (entry) {
+      await session.saveWallet(wallet);
+      await session.insertLedgerEntry(entry);
+    }
+    transaction.markProcessed(reference?.id, occurredAt);
+    await session.saveTransactionResult(transaction, wallet.balance);
+    const processedEvent = WagerTransactionProcessed.create({
+      eventId: randomUUID(),
+      aggregateId: transaction.id,
+      correlationId: transaction.id,
+      occurredAt,
+      data: transactionEventData(transaction, wallet.balance),
+    });
+    await session.insertOutboxMessage({
+      transactionId: transaction.id,
+      sequenceNumber: processedSequence,
+      event: processedEvent.toJSON(),
+    });
+
+    if (entry) {
+      const balanceChangedEvent = WalletBalanceChanged.create({
+        eventId: randomUUID(),
+        aggregateId: wallet.id,
+        correlationId: transaction.id,
+        occurredAt,
+        data: {
+          walletId: wallet.id,
+          transactionId: transaction.id,
+          direction: entry.direction,
+          money: entry.money.toJSON(),
+          balanceBefore: entry.balanceBefore.toJSON(),
+          balanceAfter: entry.balanceAfter.toJSON(),
+          walletVersion: wallet.version,
+        },
+      });
+      await session.insertOutboxMessage({
+        transactionId: transaction.id,
+        sequenceNumber: processedSequence + 1,
+        event: balanceChangedEvent.toJSON(),
+      });
+    }
+
+    return {
+      transactionId: transaction.id,
+      status: WagerTransactionStatus.Processed,
+      balance: wallet.balance,
+      idempotentReplay: false,
+    };
   }
 
   private assertInboxRegistration(registration: InboxMessageRegistration): void {
@@ -472,6 +581,7 @@ export class ProcessWager {
     wallet: Wallet,
     occurredAt: Date,
     failureCode: string,
+    sequenceNumber = 1,
   ): Promise<ProcessWagerResult> {
     transaction.reject(failureCode);
     await session.saveTransactionResult(transaction, wallet.balance);
@@ -487,7 +597,7 @@ export class ProcessWager {
     });
     await session.insertOutboxMessage({
       transactionId: transaction.id,
-      sequenceNumber: 1,
+      sequenceNumber,
       event: rejectedEvent.toJSON(),
     });
     return {
