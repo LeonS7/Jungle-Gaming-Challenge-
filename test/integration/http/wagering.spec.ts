@@ -191,6 +191,15 @@ function createRequest(
   };
 }
 
+test('GET / encaminha o navegador para o painel web configurado', async () => {
+  await withHttpApplication(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/`, { redirect: 'manual' });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('http://127.0.0.1:5173');
+  });
+});
+
 async function submit(
   baseUrl: string,
   body: Record<string, unknown>,

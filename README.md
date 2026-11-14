@@ -105,7 +105,7 @@ bun install
 bun run dev
 ```
 
-Abra `http://127.0.0.1:5173`. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`. A API em `http://127.0.0.1:3000` não serve uma página HTML: acessar sua raiz `/` responde 404 `Cannot GET /`, enquanto a interface é servida pelo Vite na porta 5173.
+Abra `http://127.0.0.1:5173`. A raiz da API em `http://127.0.0.1:3000` também redireciona o navegador para essa interface. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`; para alterar o destino do redirecionamento, configure `WEB_PANEL_URL` no `.env` da aplicação.
 
 Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. Operações de gravação pedem confirmação no navegador. O simulador permite repetir exatamente a última solicitação com a mesma chave e testar o conflito usando a mesma chave com conteúdo alterado; a garantia vem do armazenamento persistente da API, não do estado do navegador. O simulador de concorrência com várias instâncias não faz parte desta tela ainda. O painel não tem autenticação e deve ser usado somente em ambiente local/de demonstração; não o exponha publicamente. Uma implantação estática precisará de proxy reverso para a API ou configuração de CORS apropriada.
 

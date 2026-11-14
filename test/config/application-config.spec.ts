@@ -26,6 +26,7 @@ describe('carregamento da configuração da aplicação', () => {
     const config = loadApplicationConfig(validEnvironment);
 
     expect(config.appPort).toBe(3000);
+    expect(config.webPanelUrl).toBe('http://127.0.0.1:5173');
     expect(config.postgres.port).toBe(5432);
     expect(config.sqs.endpoint).toBe('http://localhost:4566');
     expect(config.sqs.outboxQueueName).toBe('wager-events.fifo');
@@ -61,6 +62,17 @@ describe('carregamento da configuração da aplicação', () => {
     expect(() => loadApplicationConfig(environment)).toThrow(
       'AWS_ENDPOINT deve ser uma URL HTTP ou HTTPS válida.',
     );
+  });
+
+  test('permite configurar a URL do painel e rejeita protocolos não HTTP', () => {
+    expect(loadApplicationConfig({
+      ...validEnvironment,
+      WEB_PANEL_URL: 'https://painel.exemplo.test',
+    }).webPanelUrl).toBe('https://painel.exemplo.test');
+    expect(() => loadApplicationConfig({
+      ...validEnvironment,
+      WEB_PANEL_URL: 'ftp://painel.exemplo.test',
+    })).toThrow('WEB_PANEL_URL deve ser uma URL HTTP ou HTTPS válida.');
   });
 
   test('permite selecionar um schema isolado e valida seu identificador', () => {

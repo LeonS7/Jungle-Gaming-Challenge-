@@ -4,6 +4,7 @@
  */
 export interface ApplicationConfig {
   readonly appPort: number;
+  readonly webPanelUrl: string;
   readonly postgres: {
     readonly host: string;
     readonly port: number;
@@ -60,6 +61,23 @@ function requiredHttpEndpoint(environment: Environment, key: string): string {
   return value;
 }
 
+function optionalHttpEndpoint(
+  environment: Environment,
+  key: string,
+  fallback: string,
+): string {
+  const value = environment[key]?.trim() || fallback;
+  try {
+    const endpoint = new URL(value);
+    if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
+      throw new Error('O protocolo não é suportado.');
+    }
+  } catch {
+    throw new Error(`${key} deve ser uma URL HTTP ou HTTPS válida.`);
+  }
+  return value;
+}
+
 export function loadApplicationConfig(
   environment: Environment = process.env,
 ): ApplicationConfig {
@@ -71,6 +89,11 @@ export function loadApplicationConfig(
   }
   return {
     appPort: requiredPort(environment, 'APP_PORT'),
+    webPanelUrl: optionalHttpEndpoint(
+      environment,
+      'WEB_PANEL_URL',
+      'http://127.0.0.1:5173',
+    ),
     postgres: {
       host: requiredString(environment, 'DATABASE_HOST'),
       port: requiredPort(environment, 'DATABASE_PORT'),

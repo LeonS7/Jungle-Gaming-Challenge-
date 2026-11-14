@@ -34,6 +34,7 @@ import { WalletReconciliationMetrics } from './infrastructure/observability/wall
 import { MetricsController } from './presentation/observability/metrics.controller.js';
 import { PendingReferenceWorker } from './infrastructure/messaging/pending-reference-worker.js';
 import { WageringMetrics } from './infrastructure/observability/wagering-metrics.js';
+import { PanelController } from './presentation/panel/panel.controller.js';
 
 @Module({})
 export class AppModule {
@@ -48,6 +49,7 @@ export class AppModule {
         MikroOrmModule.forRoot(createMikroOrmOptions(config, schema)),
       ],
       controllers: [
+        PanelController,
         HealthController,
         WageringController,
         WageringQueriesController,
