@@ -17,7 +17,7 @@ bun install
 docker compose up -d postgres localstack
 bun run db:migrate
 bun run check
-bun test
+bun test --timeout=60000
 bun run start
 ```
 
@@ -92,6 +92,21 @@ Os logs estruturados dos caminhos HTTP, SQS e workers registram contexto de corr
 
 O teste distribuído cria três processos Bun independentes e um schema PostgreSQL temporário isolado. Ele envia 50 solicitações idênticas pelas três instâncias, verifica um único débito e saldo igual à soma do ledger, encerra os processos, inicia novas instâncias e verifica a recuperação de uma referência pendente e a ordem dos eventos da outbox. Esse cenário valida concorrência e recuperação em execução local; não é um teste de carga nem mede limites de throughput.
 
-Verificações: `bun run check`, `bun run build`, `bun test --timeout=60000` e `bun run test:integration`. Os testes usam PostgreSQL e LocalStack SQS reais em schemas/filas isolados e cobrem migrations, constraints, concorrência, idempotência, eventos, reversões, inbox, redelivery, DLQ e rollback financeiro quando uma gravação transacional falha. PostgreSQL e LocalStack precisam estar acessíveis para executar a suíte completa.
+## Painel web local — Fase 10.1
 
-Verificações: `bun run check`, `bun run build`, `bun test` e `bun run test:integration`. Os testes usam PostgreSQL e LocalStack SQS reais em schemas/filas isolados e cobrem migrations, constraints, concorrência, idempotência, eventos, reversões, inbox, redelivery, DLQ e rollback financeiro quando uma gravação transacional falha. PostgreSQL e LocalStack precisam estar acessíveis para executar a suíte completa.
+Esta primeira entrega contém um painel somente de leitura para saúde da aplicação, PostgreSQL, SQS e métricas disponíveis no backend. Ele não mostra total de carteiras ou volume financeiro porque a API ainda não oferece esses indicadores. As métricas exibidas pertencem ao processo consultado e não representam um agregado de todas as réplicas.
+
+Com backend, PostgreSQL e LocalStack em execução, abra outro terminal PowerShell:
+
+```powershell
+Set-Location web
+Copy-Item .env.example .env
+bun install
+bun run dev
+```
+
+Abra `http://127.0.0.1:5173`. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`.
+
+Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. A versão atual ainda não oferece telas de carteira, simulador, idempotência, concorrência ou reconciliação. O painel não tem autenticação e deve ser usado somente em ambiente local/de demonstração; não o exponha publicamente. Uma implantação estática precisará de proxy reverso para a API ou configuração de CORS apropriada.
+
+Verificações do backend: `bun run check`, `bun run build`, `bun test --timeout=60000` e `bun run test:integration`. A suíte requer PostgreSQL e LocalStack SQS acessíveis e cobre migrations, constraints, concorrência, idempotência, eventos, reversões, inbox, redelivery, DLQ e rollback financeiro.

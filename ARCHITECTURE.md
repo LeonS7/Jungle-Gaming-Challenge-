@@ -136,9 +136,20 @@ O consumidor de entrada e o publisher da outbox estão implementados; a Fase 6 c
 - O limite padrão é 50 lançamentos e o máximo é 100. Cursor malformado ou de outra carteira responde 400; carteira ou transação inexistente responde 404; indisponibilidade reconhecida do PostgreSQL responde 503.
 - Testes HTTP com PostgreSQL real verificam projeções monetárias como strings, busca por ID e identidade do provedor, paginação de múltiplas páginas, cursor/limite inválidos e recursos inexistentes.
 
+## Painel web local
+
+- O frontend fica em `web/` como pacote Bun independente, com Vue 3, TypeScript strict e Vite. Não compartilha dependências nem configurações de build com o backend NestJS.
+- A primeira entrega tem somente um painel de leitura. O cliente HTTP consulta `/health/live`, `/health/ready` e `/metrics`; não acessa PostgreSQL, SQS nem LocalStack diretamente.
+- O servidor de desenvolvimento encaminha `/api/*` para o endereço `VITE_API_PROXY_TARGET` (padrão `http://127.0.0.1:3000`) e remove o prefixo `/api`. `VITE_API_BASE_URL` define o prefixo usado pelo cliente, padrão `/api`. Isso evita CORS no desenvolvimento local; publicação estática requer um proxy reverso ou política CORS deliberada.
+- A página mostra liveness, readiness de PostgreSQL/SQS e contadores de transação, DLQ e outbox que existem no endpoint de métricas. Os valores são locais ao processo que respondeu e podem zerar no reinício; não são agregados entre réplicas.
+- Não há endpoint para total de carteiras nem definição de volume financeiro, então esses indicadores não são exibidos. Também não há telas de operação nesta entrega. O painel não altera dados, não implementa regras financeiras e não possui autenticação; deve permanecer limitado ao ambiente local/de demonstração.
+- Não foi adicionada biblioteca visual. Os componentes semânticos e estilos responsivos próprios mantêm dependências reduzidas; o frontend usa uma paleta e tipografia do sistema sem baixar fontes ou ativos de terceiros.
+- Os testes iniciais cobrem a leitura das séries Prometheus fixas e inválidas. O build Vite e a checagem `vue-tsc` verificam os componentes e o contrato estático; a integração visual com a API exige backend e serviços locais ativos.
+
 ## Verificação
 
 - `bun run check`: verifica os tipos da aplicação e dos testes.
+- Em `web/`, `bun run check`, `bun test` e `bun run build` verificam tipos, parser de métricas e bundle do painel.
 - `bun test --timeout=60000`: executa a suíte; os testes de integração precisam do PostgreSQL e do LocalStack local disponíveis.
 - `bun run test:integration`: executa testes reais de migrations/constraints e dos casos de uso de wagering em schemas temporários isolados, incluindo concorrência, repetição idempotente e rollback.
 - `bun run db:migrate` e `bun run db:migrate:down`: aplicam ou revertem a última migration no banco configurado.
