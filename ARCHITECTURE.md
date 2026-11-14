@@ -5,7 +5,7 @@
 - **Runtime e gerenciador de pacotes:** Bun 1.x. O TypeScript é validado e compilado por `tsc`; Bun inicia o código compilado e executa os testes.
 - **Framework HTTP:** NestJS. O domínio permanece independente do NestJS e de seus decorators.
 - **ORM:** MikroORM 7.2.9 com driver PostgreSQL. No MikroORM 7, os decorators legados são importados de `@mikro-orm/decorators/legacy`; `ReflectMetadataProvider` é configurado explicitamente.
-- **Banco e mensageria locais:** PostgreSQL e LocalStack SQS são definidos no Docker Compose. O hook do LocalStack cria a fila FIFO de wagering e sua DLQ FIFO.
+- **Banco e mensageria locais:** PostgreSQL e LocalStack SQS são definidos no Docker Compose. O hook do LocalStack cria a fila FIFO de entrada, sua DLQ e a fila FIFO de eventos publicados pela outbox.
 - **DLQ local:** a fila move uma mensagem após cinco recebimentos. O consumidor aplica backoff exponencial até 60 segundos; o limite de redrive é configurado na fila.
 - **Configuração:** os valores obrigatórios são lidos e validados antes da inicialização do NestJS.
 - **Health checks:** liveness verifica se o processo responde; readiness confirma acesso ao PostgreSQL e à fila SQS configurada.
@@ -57,12 +57,12 @@ A aplicação não inicia migrations automaticamente. A execução é explícita
 - Para uma `LOSS`, o bloqueio da carteira ordena a operação em relação a outros movimentos daquela carteira. O caso de uso registra a transação como processada com o saldo observado na mesma transação PostgreSQL, sem atualizar a carteira, avançar sua versão ou inserir lançamento no ledger.
 - `WagerTransactionProcessed` é enfileirado para toda transação aplicada, inclusive `LOSS`; `WagerTransactionRejected` é enfileirado para uma rejeição de negócio; `WagerTransactionPendingReference` é enfileirado quando a referência ainda não pode ser resolvida. `WalletBalanceChanged` só é enfileirado quando existe lançamento e alteração de saldo. Uma abertura positiva de carteira também grava `WagerTransactionProcessed` e `WalletBalanceChanged`; uma abertura de saldo zero não cria transação nem evento.
 - Cada evento usa um envelope JSON com versão, ID, agregado, correlação, data ISO-8601 e dados monetários serializados como strings. O ID da transação é usado como `correlationId`; eventos da transação usam a transação como agregado e eventos de saldo usam a carteira. `sequence_number` mantém o evento da transação antes do evento de alteração de saldo.
-- A linha de outbox é inserida pela mesma sessão MikroORM e pelo mesmo contexto SQL da transação financeira. Se a inserção da outbox falhar, PostgreSQL reverte carteira, ledger, transação e qualquer evento daquela operação. Ainda não existe publisher SQS; a outbox só persiste eventos nesta fase.
+- A linha de outbox é inserida pela mesma sessão MikroORM e pelo mesmo contexto SQL da transação financeira. Se a inserção da outbox falhar, PostgreSQL reverte carteira, ledger, transação e qualquer evento daquela operação. O publisher lê somente linhas cujo commit já terminou.
 - Para saldo insuficiente, a transação termina como rejeitada e armazena o saldo observado. A carteira e o ledger não mudam. A repetição idempotente de uma rejeição também retorna o saldo daquele momento, mesmo se o saldo atual tiver mudado depois.
 - A chave de idempotência tem unicidade global no PostgreSQL. Colisões entre carteiras distintas são resolvidas pela constraint do banco; após rollback, o caso de uso carrega o resultado persistido e compara o hash dos dados recebidos.
 - Testes com PostgreSQL real cobrem chamadas concorrentes idênticas, duas apostas disputando saldo, corrida da chave global entre carteiras, reversões concorrentes e três clientes PostgreSQL independentes tentando a mesma reversão, referências inválidas e pendentes, eventos, abertura de carteira, imutabilidade da outbox, falha induzida no ledger e na outbox com rollback financeiro e reversão/reaplicação das migrations. Três clientes independentes não constituem um ensaio com três processos da aplicação.
 
-Esses mecanismos são compartilhados entre instâncias porque estado e arbitragem ficam no PostgreSQL; ainda não foi executado ensaio ponta a ponta com três processos da aplicação. A outbox é persistida e a inbox já protege o consumidor de entrada, mas a publicação de eventos de negócio ainda não foi implementada.
+Esses mecanismos são compartilhados entre instâncias porque estado e arbitragem ficam no PostgreSQL; ainda não foi executado ensaio ponta a ponta com três processos da aplicação. A inbox protege a entrada e o publisher da outbox encaminha eventos confirmados ao SQS com lease e retry persistidos.
 
 ## Entrada assíncrona por SQS e inbox
 
@@ -74,7 +74,17 @@ Esses mecanismos são compartilhados entre instâncias porque estado e arbitrage
 - No encerramento do módulo, o long polling é abortado e o loop aguarda terminar a mensagem em andamento. A inbox não tem expurgo nesta fase: remover registros antigos faria redeliveries tardias perderem a proteção persistente.
 - Os testes PostgreSQL verificam três clientes independentes recebendo o mesmo ID simultaneamente, uma única movimentação financeira, colisão de conteúdo, rollback conjunto quando a outbox falha e as constraints/imutabilidade da tabela. O teste de integração com LocalStack cria filas FIFO temporárias e verifica commit antes do ack, redelivery, retry após falha transitória, redrive automático após o limite de tentativas e envio de payload inválido à DLQ.
 
-A inbox e o consumidor de entrada SQS estão implementados; a outbox ainda não publica eventos de negócio. Falta o publisher transacional concorrente da outbox, coberto na fase seguinte.
+O consumidor de entrada e o publisher da outbox estão implementados; a Fase 6 cobre os dois fluxos com PostgreSQL e LocalStack.
+
+## Publisher da outbox
+
+- A saída usa uma fila FIFO separada, `wager-events.fifo`, pois seu envelope de evento não corresponde ao contrato da fila de entrada `wager-transactions.fifo`. A readiness exige acesso às duas filas e à DLQ de entrada.
+- Cada publisher seleciona linhas elegíveis em transação curta com `FOR UPDATE SKIP LOCKED`, grava um `lock_token` exclusivo e `locked_until`, e confirma o claim antes de acessar o SQS. O lease permite que outra instância recupere o evento depois que o processo morre.
+- A consulta só reclama o menor `sequence_number` ainda não publicado de cada transação. O `transaction_id` é usado como `MessageGroupId`, mantendo a ordem dos eventos da mesma transação na fila FIFO. `eventId` é o `MessageDeduplicationId` estável.
+- Depois do envio, a linha recebe `published_at` e tem o lease removido, desde que o token ainda pertença ao publisher. Se o SQS falhar, o número de tentativas e `next_attempt_at` são atualizados com backoff exponencial limitado a 60 segundos; o payload original nunca muda nem é apagado.
+- Se o processo cair depois do envio e antes do `published_at`, o lease vence e outra instância envia o mesmo `eventId`. A entrega é *at-least-once*; a deduplicação FIFO reduz duplicatas dentro da janela do SQS, mas consumidores também precisam persistir idempotência.
+- Falhas de publicação não são removidas para uma DLQ: a outbox PostgreSQL retém os eventos e continua tentando. A fila separada de DLQ é usada pelo consumidor de mensagens de entrada inválidas.
+- Testes PostgreSQL e LocalStack verificam dois publishers concorrentes, a ordem dos eventos, deduplicação após falha ao confirmar o envio, recuperação de lease vencido e retry após indisponibilidade da fila.
 
 ## Entrada HTTP de wagering
 

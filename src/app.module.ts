@@ -24,13 +24,17 @@ import { WageringController } from './presentation/wagering/wagering.controller.
 import { WageringQueriesController } from './presentation/wagering/wagering-queries.controller.js';
 import { WalletsController } from './presentation/wallets/wallets.controller.js';
 import { WagerSqsConsumer } from './infrastructure/messaging/wager-sqs-consumer.js';
+import { PostgresOutboxPublishing } from './infrastructure/persistence/postgres-outbox-publishing.js';
+import { PublishOutboxMessages } from './application/outbox/publish-outbox-messages.js';
+import { SqsOutboxEventPublisher } from './infrastructure/messaging/sqs-outbox-event-publisher.js';
+import { OutboxPublisherWorker } from './infrastructure/messaging/outbox-publisher-worker.js';
 
 @Module({})
 export class AppModule {
   static register(
     config: ApplicationConfig,
     schema?: string,
-    enableQueueConsumer = true,
+    enableBackgroundWorkers = true,
   ): DynamicModule {
     return {
       module: AppModule,
@@ -76,7 +80,27 @@ export class AppModule {
           useFactory: (orm: MikroORM) =>
             new OpenWallet(new PostgresWalletOpeningPersistence(orm, schema)),
         },
-        ...(enableQueueConsumer ? [WagerSqsConsumer] : []),
+        ...(enableBackgroundWorkers
+          ? [
+              {
+                provide: PostgresOutboxPublishing,
+                inject: [MikroORM],
+                useFactory: (orm: MikroORM) =>
+                  new PostgresOutboxPublishing(orm, schema),
+              },
+              SqsOutboxEventPublisher,
+              {
+                provide: PublishOutboxMessages,
+                inject: [PostgresOutboxPublishing, SqsOutboxEventPublisher],
+                useFactory: (
+                  persistence: PostgresOutboxPublishing,
+                  publisher: SqsOutboxEventPublisher,
+                ) => new PublishOutboxMessages(persistence, publisher),
+              },
+              WagerSqsConsumer,
+              OutboxPublisherWorker,
+            ]
+          : []),
       ],
     };
   }

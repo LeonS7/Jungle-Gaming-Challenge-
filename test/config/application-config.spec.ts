@@ -18,6 +18,7 @@ const validEnvironment = {
   AWS_SECRET_ACCESS_KEY: 'test',
   SQS_QUEUE_NAME: 'wager-transactions.fifo',
   SQS_DLQ_QUEUE_NAME: 'wager-transactions-dlq.fifo',
+  SQS_OUTBOX_QUEUE_NAME: 'wager-events.fifo',
 };
 
 describe('carregamento da configuração da aplicação', () => {
@@ -27,6 +28,7 @@ describe('carregamento da configuração da aplicação', () => {
     expect(config.appPort).toBe(3000);
     expect(config.postgres.port).toBe(5432);
     expect(config.sqs.endpoint).toBe('http://localhost:4566');
+    expect(config.sqs.outboxQueueName).toBe('wager-events.fifo');
   });
 
   test('rejeita um valor obrigatório ausente', () => {
@@ -34,6 +36,14 @@ describe('carregamento da configuração da aplicação', () => {
 
     expect(() => loadApplicationConfig(environment)).toThrow(
       'A variável de ambiente obrigatória DATABASE_PASSWORD não foi informada.',
+    );
+  });
+
+  test('rejeita a ausência da fila de saída da outbox', () => {
+    const environment = { ...validEnvironment, SQS_OUTBOX_QUEUE_NAME: '' };
+
+    expect(() => loadApplicationConfig(environment)).toThrow(
+      'A variável de ambiente obrigatória SQS_OUTBOX_QUEUE_NAME não foi informada.',
     );
   });
 

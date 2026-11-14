@@ -18,6 +18,7 @@ sqs = boto3.client(
 
 dead_letter_queue_name = "wager-transactions-dlq.fifo"
 queue_name = "wager-transactions.fifo"
+outbox_queue_name = "wager-events.fifo"
 
 dead_letter_queue_url = sqs.create_queue(
     QueueName=dead_letter_queue_name,
@@ -43,5 +44,13 @@ sqs.create_queue(
                 "maxReceiveCount": "5",
             }
         ),
+    },
+)
+
+sqs.create_queue(
+    QueueName=outbox_queue_name,
+    Attributes={
+        "FifoQueue": "true",
+        "ContentBasedDeduplication": "false",
     },
 )

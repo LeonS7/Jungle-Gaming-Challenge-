@@ -36,17 +36,28 @@ export class HealthService implements OnModuleDestroy {
     status: 'ok';
     dependencies: { postgres: 'ok'; sqs: 'ok' };
   }> {
-    const [postgresResult, sqsResult] = await Promise.allSettled([
+    const [postgresResult, wagerQueueResult, deadLetterQueueResult, outboxQueueResult] = await Promise.allSettled([
       this.checkPostgresConnection(),
       this.sqsClient.send(
         new GetQueueUrlCommand({ QueueName: this.config.sqs.queueName }),
+      ),
+      this.sqsClient.send(
+        new GetQueueUrlCommand({ QueueName: this.config.sqs.deadLetterQueueName }),
+      ),
+      this.sqsClient.send(
+        new GetQueueUrlCommand({ QueueName: this.config.sqs.outboxQueueName }),
       ),
     ]);
 
     const postgresIsReady =
       postgresResult.status === 'fulfilled' && postgresResult.value;
-    const sqsIsReady =
-      sqsResult.status === 'fulfilled' && Boolean(sqsResult.value.QueueUrl);
+    const sqsIsReady = [
+      wagerQueueResult,
+      deadLetterQueueResult,
+      outboxQueueResult,
+    ].every((result) =>
+      result.status === 'fulfilled' && Boolean(result.value.QueueUrl),
+    );
 
     if (!postgresIsReady || !sqsIsReady) {
       throw new ServiceUnavailableException({

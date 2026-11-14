@@ -18,6 +18,7 @@ export interface ApplicationConfig {
     readonly secretAccessKey: string;
     readonly queueName: string;
     readonly deadLetterQueueName: string;
+    readonly outboxQueueName: string;
   };
 }
 
@@ -77,6 +78,7 @@ export function loadApplicationConfig(
       secretAccessKey: requiredString(environment, 'AWS_SECRET_ACCESS_KEY'),
       queueName: requiredString(environment, 'SQS_QUEUE_NAME'),
       deadLetterQueueName: requiredString(environment, 'SQS_DLQ_QUEUE_NAME'),
+      outboxQueueName: requiredString(environment, 'SQS_OUTBOX_QUEUE_NAME'),
     },
   };
 }
