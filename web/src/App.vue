@@ -98,14 +98,14 @@ onUnmounted(() => {
 
       <div class="rail-caption">PAINEL LOCAL</div>
       <nav>
-        <button class="nav-item" :class="{ 'nav-item-active': activeSection === 'overview' }" type="button" :aria-current="activeSection === 'overview' ? 'page' : undefined" @click="activeSection = 'overview'">
+        <a class="nav-item" :class="{ 'nav-item-active': activeSection === 'overview' }" href="#visao-geral" :aria-current="activeSection === 'overview' ? 'page' : undefined" @click="activeSection = 'overview'">
           <span class="nav-icon" aria-hidden="true">◫</span>
           <span>Visão geral</span>
-        </button>
-        <button class="nav-item" :class="{ 'nav-item-active': activeSection === 'operations' }" type="button" :aria-current="activeSection === 'operations' ? 'page' : undefined" @click="activeSection = 'operations'">
+        </a>
+        <a class="nav-item" :class="{ 'nav-item-active': activeSection === 'operations' }" href="#area-do-jogador" :aria-current="activeSection === 'operations' ? 'page' : undefined" @click="activeSection = 'operations'">
           <span class="nav-icon" aria-hidden="true">↗</span>
           <span>Testar como jogador</span>
-        </button>
+        </a>
       </nav>
 
       <div class="rail-footer">
@@ -131,7 +131,7 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <div id="visao-geral" class="content-area" v-show="activeSection === 'overview'">
+      <div id="visao-geral" class="content-area">
         <section class="page-heading">
           <div>
             <p class="eyebrow">CENTRO DE OPERAÇÕES <span>•</span> AMBIENTE LOCAL</p>
@@ -240,7 +240,7 @@ onUnmounted(() => {
         </footer>
       </div>
 
-      <div class="content-area operations-area" v-show="activeSection === 'operations'">
+      <div id="area-do-jogador" class="content-area operations-area">
         <section class="page-heading">
           <div>
             <p class="eyebrow">AMBIENTE LOCAL <span>•</span> OPERAÇÕES REAIS</p>

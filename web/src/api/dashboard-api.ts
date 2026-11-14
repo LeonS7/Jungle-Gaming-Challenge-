@@ -26,6 +26,7 @@ interface HealthResponse {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+const API_REQUEST_TIMEOUT_MILLISECONDS = 5_000;
 
 function dependencyState(value: unknown): HealthState {
   if (value === 'ok') {
@@ -43,6 +44,7 @@ async function requestHealth(path: string): Promise<{
 }> {
   const response = await fetch(API_BASE_URL + path, {
     headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MILLISECONDS),
   });
   let body: HealthResponse | null = null;
   try {
@@ -91,6 +93,7 @@ async function readMetrics(): Promise<{
   try {
     const response = await fetch(API_BASE_URL + '/metrics', {
       headers: { accept: 'text/plain' },
+      signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MILLISECONDS),
     });
     if (!response.ok) {
       return { metrics: null, error: 'A API não conseguiu fornecer as métricas.' };
