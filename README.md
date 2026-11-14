@@ -95,7 +95,7 @@ O teste distribuído cria três processos Bun independentes e um schema PostgreS
 
 ## Painel web local — Fase 10
 
-O painel oferece uma visão de saúde e uma área funcional para simular a jornada de um jogador. Nela é possível abrir e consultar carteiras, consultar páginas do ledger, reconciliar o saldo, enviar BET/WIN/LOSS/REFUND/ROLLBACK e consultar transações pelo ID interno ou pela identidade externa do provedor. Todas as gravações são enviadas à API NestJS e persistidas no PostgreSQL; a interface não calcula saldos nem implementa regras financeiras.
+O painel é organizado nas áreas **Jogo**, **Extrato** e **Laboratório de Testes**. Em Jogo, o usuário abre ou seleciona uma carteira e envia operações à API. Extrato consulta transações persistidas e pode apresentá-las por transação ou agrupadas por jogo e rodada. O Laboratório reúne saúde e métricas da API, ledger, reconciliação, consulta técnica de transações e ensaios de idempotência. A interface não calcula saldo nem implementa regras financeiras.
 
 Com backend, PostgreSQL e LocalStack em execução, abra outro terminal PowerShell:
 
@@ -108,7 +108,9 @@ bun run dev
 
 Abra `http://127.0.0.1:5173`. A raiz da API em `http://127.0.0.1:3000` também redireciona o navegador para essa interface. O cliente usa o prefixo `/api` definido por `VITE_API_BASE_URL`; o proxy de desenvolvimento encaminha esse prefixo para `http://127.0.0.1:3000`, evitando dependência de CORS na execução local. Para apontar o proxy a outro backend, altere `VITE_API_PROXY_TARGET` em `web/.env`; para alterar o destino do redirecionamento, configure `WEB_PANEL_URL` no `.env` da aplicação.
 
-Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. Operações de gravação pedem confirmação no navegador. O simulador permite repetir exatamente a última solicitação com a mesma chave e testar o conflito usando a mesma chave com conteúdo alterado; a garantia vem do armazenamento persistente da API, não do estado do navegador. O simulador de concorrência com várias instâncias não faz parte desta tela ainda.
+Para validar o pacote do painel, dentro de `web/`, execute `bun run check`, `bun test` e `bun run build`. Operações de gravação pedem confirmação no navegador. Os ensaios do Laboratório permitem repetir exatamente a última solicitação com a mesma chave e testar o conflito usando a mesma chave com conteúdo alterado; a garantia vem do armazenamento persistente da API, não do estado do navegador. O simulador de concorrência com várias instâncias e os cenários guiados de demonstração ainda não fazem parte desta tela.
+
+O navegador guarda somente o identificador da carteira selecionada. Ao reabrir o painel, consulta a carteira pela API e o Extrato busca novamente as páginas de transações no PostgreSQL; saldos, operações e histórico não são persistidos no armazenamento local do navegador. O limite da consulta e o contrato estão descritos em `docs/openapi.yaml`.
 
 API, painel e portas publicadas pelo Docker Compose ficam vinculados ao loopback (`127.0.0.1`). Não há autenticação por usuário: outros processos executados na mesma máquina podem chamar a API. Essa fronteira atende à demonstração local, mas não protege uma implantação em rede; não altere os vínculos para interfaces públicas nem exponha o serviço sem integrar autenticação respaldada por um provedor de identidade e controles de rede apropriados.
 

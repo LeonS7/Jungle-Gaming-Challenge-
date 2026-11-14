@@ -1,4 +1,4 @@
-/* Estilos responsivos do painel. Assinatura: Leonardo de Souza da Luz */
+/* Esta página define os estilos responsivos das áreas do painel e seus componentes. Assinatura: Leonardo de Souza da Luz */
 :root {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: #17251f;
@@ -50,8 +50,10 @@ button { cursor: pointer; }
 .brand-name { font-family: Manrope, sans-serif; font-size: 15px; font-weight: 800; letter-spacing: -.4px; }
 .brand-name span { display: block; margin-top: -2px; color: #9abca8; font-size: 11px; font-weight: 500; letter-spacing: .4px; }
 .rail-caption { margin: 54px 0 12px 11px; color: #83a995; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
-.nav-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 8px; color: #b7cec1; background: transparent; font-size: 12px; text-align: left; }
+.main-navigation { display: grid; gap: 4px; }
+.nav-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 8px; color: #b7cec1; background: transparent; font-size: 12px; text-align: left; cursor: pointer; }
 .nav-item-active { color: #fff; background: #225840; }
+.nav-item:focus-visible { outline: 2px solid #b8e2ca; outline-offset: 2px; }
 .nav-icon { width: 18px; text-align: center; font-size: 18px; }
 .rail-footer { display: flex; align-items: center; gap: 9px; margin-top: auto; padding: 14px 10px; border-top: 1px solid #2c5944; color: #a4c0af; font-size: 10px; }
 .local-indicator, .environment-badge span { width: 7px; height: 7px; border-radius: 50%; background: #83d2a4; box-shadow: 0 0 0 3px #83d2a41e; }
@@ -197,6 +199,35 @@ h2 { margin: 0; color: #25362d; font-size: 15px; font-weight: 700; letter-spacin
 .operation-screen-spaced { margin-top: 17px; }
 .operations-footer { color: #8d7960; }
 
+.history-workspace { margin-top: 4px; }
+.history-heading { margin-bottom: 17px; }
+.history-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.history-count { color: #89958d; font-size: 10px; white-space: nowrap; }
+.history-empty { display: grid; justify-items: start; gap: 8px; padding: 22px 18px; border: 1px dashed #dce4dd; border-radius: 8px; color: #526359; background: #fbfcfb; font-size: 11px; }
+.history-empty p { margin: 0; color: #87938b; font-size: 10px; line-height: 1.5; }
+.history-table-wrap { overflow-x: auto; border: 1px solid #e9eeea; border-radius: 8px; }
+.history-table { width: 100%; min-width: 780px; border-collapse: collapse; font-size: 10px; }
+.history-table th, .history-table td { padding: 11px 12px; border-bottom: 1px solid #edf0ed; text-align: left; vertical-align: top; }
+.history-table th { color: #7c8a80; background: #f8faf8; font-size: 9px; font-weight: 650; white-space: nowrap; }
+.history-table td { color: #425349; }
+.history-table tbody tr:last-child td { border-bottom: 0; }
+.history-secondary { display: block; max-width: 190px; margin-top: 4px; overflow: hidden; color: #89958d; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.history-status { display: inline-flex; padding: 4px 7px; border-radius: 99px; color: #597064; background: #edf2ee; font-size: 9px; white-space: nowrap; }
+.history-status-processed { color: #2c7249; background: #eaf5ed; }
+.history-status-rejected { color: #a24840; background: #fff0ed; }
+.history-status-pending, .history-status-pending_reference { color: #866522; background: #fff7df; }
+.round-list { display: grid; gap: 12px; }
+.round-card { padding: 15px; border: 1px solid #e8ece8; border-radius: 8px; background: #fff; }
+.round-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid #edf0ed; }
+.round-card-heading .section-kicker { margin-bottom: 4px; }
+.round-card-heading h3 { margin: 0; color: #34473c; font-size: 13px; }
+.round-transactions { display: grid; }
+.round-transaction { display: grid; grid-template-columns: minmax(130px, 1fr) auto minmax(135px, auto); align-items: center; gap: 12px; min-height: 41px; border-bottom: 1px solid #f0f2f0; color: #5f7065; font-size: 10px; }
+.round-transaction:last-child { border-bottom: 0; }
+.round-transaction strong { color: #34473c; font-size: 10px; }
+.round-transaction time { color: #89958d; font-size: 9px; text-align: right; }
+.history-pagination { display: flex; justify-content: center; margin-top: 15px; }
+
 @media (max-width: 900px) {
   .side-rail { width: 205px; }
   .main-area { margin-left: 205px; }
@@ -241,6 +272,11 @@ h2 { margin: 0; color: #25362d; font-size: 15px; font-weight: 700; letter-spacin
   .workspace-card dl > div { align-items: flex-start; flex-direction: column; gap: 3px; }
   .workspace-card dd { text-align: left; }
   .button-row > button { flex: 1 1 auto; }
+  .history-controls { align-items: flex-start; flex-direction: column; }
+  .history-workspace { padding: 14px; }
+  .history-heading { align-items: flex-start; }
+  .round-transaction { grid-template-columns: 1fr auto; gap: 5px 10px; padding: 8px 0; }
+  .round-transaction time { grid-column: 1 / -1; text-align: left; }
 }
 
 @media (prefers-reduced-motion: reduce) {

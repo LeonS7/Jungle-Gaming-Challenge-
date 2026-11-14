@@ -1,5 +1,5 @@
 /**
- * Esta página mantém os contratos HTTP usados pelas telas de carteira e wagering.
+ * Esta página mantém os contratos HTTP usados por carteira, jogo e histórico.
  * Valores monetários trafegam como strings decimais; a API continua responsável
  * pelas regras, pela idempotência e por persistir as operações.
  * Assinatura: Leonardo de Souza da Luz
@@ -84,6 +84,11 @@ export interface WagerTransactionView {
   readonly processedAt: string | null;
 }
 
+export interface WalletTransactionsPageView {
+  readonly items: readonly WagerTransactionView[];
+  readonly nextCursor: string | null;
+}
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -146,6 +151,19 @@ export function createWageringApi(fetcher: ApiFetch = fetch) {
         query.set('cursor', cursor);
       }
       return request(`/wallets/${encodeURIComponent(walletId)}/ledger?${query.toString()}`);
+    },
+    getWalletTransactions(
+      walletId: string,
+      cursor?: string,
+      limit = 20,
+    ): Promise<WalletTransactionsPageView> {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (cursor) {
+        query.set('cursor', cursor);
+      }
+      return request(
+        `/wallets/${encodeURIComponent(walletId)}/transactions?${query.toString()}`,
+      );
     },
     reconcileWallet(walletId: string): Promise<ReconciliationView> {
       return request(`/wallets/${encodeURIComponent(walletId)}/reconciliation`, {

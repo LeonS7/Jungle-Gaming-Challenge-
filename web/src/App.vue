@@ -1,9 +1,20 @@
-<!-- Esta página apresenta saúde e métricas locais da API. Assinatura: Leonardo de Souza da Luz -->
+<!-- Esta página organiza Jogo, Extrato e Laboratório e recupera a carteira salva pela API. Assinatura: Leonardo de Souza da Luz -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import WalletWorkspace from './features/wallets/WalletWorkspace.vue';
 import WageringWorkspace from './features/wagering/WageringWorkspace.vue';
-import type { WalletView } from './api/wagering-api';
+import TransactionHistoryWorkspace from './features/history/TransactionHistoryWorkspace.vue';
+import {
+  readSelectedWalletId,
+  removeSelectedWalletId,
+  saveSelectedWalletId,
+} from './features/wallets/selected-wallet-storage';
+import {
+  ApiRequestError,
+  wageringApi,
+  type WalletView,
+  type WagerRequest,
+} from './api/wagering-api';
 import {
   loadDashboardSnapshot,
   type DashboardSnapshot,
@@ -11,12 +22,27 @@ import {
 } from './api/dashboard-api';
 
 const REFRESH_INTERVAL_MILLISECONDS = 15_000;
+type MainSection = 'game' | 'statement' | 'lab';
+interface LastWagerRequest {
+  readonly payload: WagerRequest;
+  readonly key: string;
+}
+
 const snapshot = ref<DashboardSnapshot | null>(null);
 const loading = ref(false);
 const pageError = ref<string | null>(null);
-const activeSection = ref<'overview' | 'operations'>('overview');
+const activeSection = ref<MainSection>('game');
 const selectedWallet = ref<WalletView | null>(null);
+const lastWagerRequest = ref<LastWagerRequest | null>(null);
+const restoringWallet = ref(false);
+const walletContextError = ref<string | null>(null);
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
+
+const sectionLabels: Readonly<Record<MainSection, string>> = {
+  game: 'Jogo',
+  statement: 'Extrato',
+  lab: 'Laboratório de Testes',
+};
 
 const healthCards = computed(() => {
   if (!snapshot.value) {
@@ -76,8 +102,51 @@ async function refreshDashboard(): Promise<void> {
   }
 }
 
+function selectWallet(wallet: WalletView): void {
+  selectedWallet.value = wallet;
+  walletContextError.value = null;
+  try {
+    saveSelectedWalletId(window.localStorage, wallet.id);
+  } catch {
+    walletContextError.value = 'O navegador não conseguiu guardar o identificador da carteira para a próxima visita.';
+  }
+}
+
+async function restoreSelectedWallet(): Promise<void> {
+  let walletId: string | null;
+  try {
+    walletId = readSelectedWalletId(window.localStorage);
+  } catch {
+    walletContextError.value = 'O navegador bloqueou a leitura da carteira salva. Consulte-a novamente na área Jogo.';
+    return;
+  }
+  if (!walletId) {
+    return;
+  }
+
+  restoringWallet.value = true;
+  walletContextError.value = null;
+  try {
+    selectedWallet.value = await wageringApi.getWallet(walletId);
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === 404) {
+      try {
+        removeSelectedWalletId(window.localStorage);
+      } catch {
+        // A seleção manual continua disponível se o navegador bloquear o armazenamento.
+      }
+      walletContextError.value = 'A carteira salva não existe mais. Selecione ou crie outra carteira.';
+    } else {
+      walletContextError.value = 'Não foi possível recuperar a carteira salva. Verifique a API e tente novamente.';
+    }
+  } finally {
+    restoringWallet.value = false;
+  }
+}
+
 onMounted(() => {
   void refreshDashboard();
+  void restoreSelectedWallet();
   refreshTimer = setInterval(() => void refreshDashboard(), REFRESH_INTERVAL_MILLISECONDS);
 });
 
@@ -97,15 +166,37 @@ onUnmounted(() => {
       </a>
 
       <div class="rail-caption">PAINEL LOCAL</div>
-      <nav>
-        <a class="nav-item" :class="{ 'nav-item-active': activeSection === 'overview' }" href="#visao-geral" :aria-current="activeSection === 'overview' ? 'page' : undefined" @click="activeSection = 'overview'">
-          <span class="nav-icon" aria-hidden="true">◫</span>
-          <span>Visão geral</span>
-        </a>
-        <a class="nav-item" :class="{ 'nav-item-active': activeSection === 'operations' }" href="#area-do-jogador" :aria-current="activeSection === 'operations' ? 'page' : undefined" @click="activeSection = 'operations'">
-          <span class="nav-icon" aria-hidden="true">↗</span>
-          <span>Testar como jogador</span>
-        </a>
+      <nav class="main-navigation" aria-label="Áreas principais">
+        <button
+          class="nav-item"
+          :class="{ 'nav-item-active': activeSection === 'game' }"
+          type="button"
+          :aria-current="activeSection === 'game' ? 'page' : undefined"
+          @click="activeSection = 'game'"
+        >
+          <span class="nav-icon" aria-hidden="true">♧</span>
+          <span>Jogo</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ 'nav-item-active': activeSection === 'statement' }"
+          type="button"
+          :aria-current="activeSection === 'statement' ? 'page' : undefined"
+          @click="activeSection = 'statement'"
+        >
+          <span class="nav-icon" aria-hidden="true">▤</span>
+          <span>Extrato</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ 'nav-item-active': activeSection === 'lab' }"
+          type="button"
+          :aria-current="activeSection === 'lab' ? 'page' : undefined"
+          @click="activeSection = 'lab'"
+        >
+          <span class="nav-icon" aria-hidden="true">⌁</span>
+          <span>Laboratório de Testes</span>
+        </button>
       </nav>
 
       <div class="rail-footer">
@@ -116,10 +207,11 @@ onUnmounted(() => {
 
     <main id="inicio" class="main-area">
       <header class="topbar">
-        <div class="breadcrumb">Jungle Gaming <span>/</span> {{ activeSection === 'overview' ? 'Visão geral' : 'Área do jogador' }}</div>
+        <div class="breadcrumb">Jungle Gaming <span>/</span> {{ sectionLabels[activeSection] }}</div>
         <div class="topbar-actions">
           <span class="environment-badge"><span></span> LOCAL</span>
           <button
+            v-if="activeSection === 'lab'"
             class="refresh-button"
             type="button"
             :disabled="loading"
@@ -131,13 +223,13 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <div id="visao-geral" class="content-area">
+      <section v-show="activeSection === 'lab'" class="content-area">
         <section class="page-heading">
           <div>
-            <p class="eyebrow">CENTRO DE OPERAÇÕES <span>•</span> AMBIENTE LOCAL</p>
-            <h1>Visão geral</h1>
+            <p class="eyebrow">FERRAMENTAS TÉCNICAS <span>•</span> AMBIENTE LOCAL</p>
+            <h1>Laboratório de Testes</h1>
             <p class="page-description">
-              Saúde do processador e atividade registrada nesta instância da API.
+              Saúde e métricas da API, ledger, reconciliação e ferramentas de idempotência.
             </p>
           </div>
           <div class="updated-at" v-if="snapshot">
@@ -234,32 +326,92 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <section class="operation-screen operation-screen-spaced" aria-label="Ledger e reconciliação">
+          <WalletWorkspace
+            :wallet="selectedWallet"
+            mode="laboratory"
+            :active="activeSection === 'lab'"
+          />
+        </section>
+        <section class="operation-screen operation-screen-spaced" aria-label="Ferramentas de wagering">
+          <WageringWorkspace
+            :wallet="selectedWallet"
+            mode="laboratory"
+            :last-request="lastWagerRequest"
+            @wallet-refreshed="selectWallet"
+          />
+        </section>
         <footer class="page-footer">
           <span class="footer-lock" aria-hidden="true">◈</span>
           Os indicadores são locais à instância consultada e reiniciam com o processo.
         </footer>
-      </div>
+      </section>
 
-      <div id="area-do-jogador" class="content-area operations-area">
+      <section v-show="activeSection === 'statement'" class="content-area operations-area">
         <section class="page-heading">
           <div>
-            <p class="eyebrow">AMBIENTE LOCAL <span>•</span> OPERAÇÕES REAIS</p>
-            <h1>Testar como jogador</h1>
-            <p class="page-description">Use as telas para criar carteiras, executar operações e consultar os resultados persistidos pela API.</p>
+            <p class="eyebrow">HISTÓRICO PERSISTENTE <span>•</span> API REAL</p>
+            <h1>Extrato</h1>
+            <p class="page-description">Consulte transações e rodadas salvas no PostgreSQL. O painel busca os dados novamente ao abrir esta área.</p>
+          </div>
+          <div class="updated-at"><span class="updated-dot" aria-hidden="true"></span> {{ selectedWallet ? 'Carteira selecionada' : 'Aguardando carteira' }}</div>
+        </section>
+        <TransactionHistoryWorkspace
+          :wallet-id="selectedWallet?.id ?? null"
+          :active="activeSection === 'statement'"
+          @return-to-game="activeSection = 'game'"
+        />
+        <footer class="page-footer">
+          <span class="footer-lock" aria-hidden="true">◈</span>
+          A lista vem da API; o navegador guarda somente o identificador da carteira selecionada.
+        </footer>
+      </section>
+
+      <section v-show="activeSection === 'game'" class="content-area operations-area">
+        <section class="page-heading">
+          <div>
+            <p class="eyebrow">EXPERIÊNCIA PRINCIPAL <span>•</span> OPERAÇÕES REAIS</p>
+            <h1>Jogo</h1>
+            <p class="page-description">Selecione sua carteira e envie operações pela API. As decisões financeiras continuam no backend.</p>
           </div>
           <div class="updated-at"><span class="updated-dot" aria-hidden="true"></span> API local em {{ selectedWallet ? 'uso' : 'espera' }}</div>
         </section>
+        <div v-if="restoringWallet" class="workspace-message message-success" role="status">
+          Recuperando a carteira salva pela API…
+        </div>
+        <div v-else-if="walletContextError" class="workspace-message message-error" role="alert">
+          <span>{{ walletContextError }}</span>
+          <button
+            v-if="!selectedWallet"
+            class="secondary-button compact-button"
+            type="button"
+            @click="restoreSelectedWallet"
+          >
+            Tentar recuperar carteira
+          </button>
+        </div>
         <section class="operation-screen" aria-label="Carteiras">
-          <WalletWorkspace :wallet="selectedWallet" @wallet-selected="selectedWallet = $event" />
+          <WalletWorkspace
+            :wallet="selectedWallet"
+            mode="player"
+            @wallet-selected="selectWallet"
+          />
         </section>
         <section class="operation-screen operation-screen-spaced" aria-label="Wagering">
-          <WageringWorkspace :wallet="selectedWallet" @wallet-refreshed="selectedWallet = $event" />
+          <WageringWorkspace
+            :wallet="selectedWallet"
+            mode="game"
+            :last-request="lastWagerRequest"
+            @wallet-refreshed="selectWallet"
+            @last-request-changed="lastWagerRequest = $event"
+            @open-statement="activeSection = 'statement'"
+          />
         </section>
         <footer class="page-footer operations-footer">
           <span class="footer-lock" aria-hidden="true">!</span>
-          As ações gravam dados locais. Não existe botão de exclusão: lançamentos do ledger são imutáveis.
+          As operações gravam dados no PostgreSQL local. O saldo e as regras são processados pela API.
         </footer>
-      </div>
+      </section>
     </main>
   </div>
 </template>

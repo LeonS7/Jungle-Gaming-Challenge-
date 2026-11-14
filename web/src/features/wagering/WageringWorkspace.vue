@@ -1,4 +1,4 @@
-<!-- Esta página envia operações e consultas de wagering pela API real. Assinatura: Leonardo de Souza da Luz -->
+<!-- Esta página envia jogadas ou apresenta testes técnicos de wagering pela API real. Assinatura: Leonardo de Souza da Luz -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import {
@@ -11,8 +11,21 @@ import {
   type WagerTransactionView,
 } from '../../api/wagering-api';
 
-const props = defineProps<{ readonly wallet: WalletView | null }>();
-const emit = defineEmits<{ (event: 'wallet-refreshed', wallet: WalletView): void }>();
+interface LastWagerRequest {
+  readonly payload: WagerRequest;
+  readonly key: string;
+}
+
+const props = defineProps<{
+  readonly wallet: WalletView | null;
+  readonly mode?: 'game' | 'laboratory';
+  readonly lastRequest?: LastWagerRequest | null;
+}>();
+const emit = defineEmits<{
+  (event: 'wallet-refreshed', wallet: WalletView): void;
+  (event: 'last-request-changed', request: LastWagerRequest | null): void;
+  (event: 'open-statement'): void;
+}>();
 
 const providerId = ref('provedor-demo');
 const externalTransactionId = ref(newTransactionId());
@@ -24,7 +37,6 @@ const kind = ref<WagerKind>('BET');
 const amount = ref('10.00');
 const referenceExternalTransactionId = ref('');
 const idempotencyKey = ref(newTransactionId());
-const lastRequest = ref<{ payload: WagerRequest; key: string } | null>(null);
 const submission = ref<WagerSubmissionView | null>(null);
 const transaction = ref<WagerTransactionView | null>(null);
 const lookupMode = ref<'id' | 'provider'>('id');
@@ -37,6 +49,7 @@ const successMessage = ref<string | null>(null);
 
 const requiresReference = computed(() => kind.value === 'REFUND' || kind.value === 'ROLLBACK');
 const canSubmit = computed(() => Boolean(props.wallet) && !busy.value);
+const lastRequest = computed(() => props.lastRequest ?? null);
 
 function newTransactionId(): string {
   return globalThis.crypto.randomUUID();
@@ -92,7 +105,9 @@ async function process(payload: WagerRequest, key: string, confirmation: string)
   busy.value = true;
   try {
     submission.value = await wageringApi.submitWager(payload, key);
-    lastRequest.value = { payload, key };
+    if (props.mode !== 'laboratory') {
+      emit('last-request-changed', { payload, key });
+    }
     transaction.value = null;
     successMessage.value = submission.value.idempotentReplay
       ? 'A API reconheceu uma repetição idempotente; o saldo não recebeu outro lançamento.'
@@ -119,23 +134,25 @@ async function submitCurrent(): Promise<void> {
 }
 
 async function replayLast(): Promise<void> {
-  if (!lastRequest.value) return;
+  const request = lastRequest.value;
+  if (!request) return;
   await process(
-    lastRequest.value.payload,
-    lastRequest.value.key,
+    request.payload,
+    request.key,
     'Reenviar exatamente o mesmo conteúdo com a mesma chave de idempotência? A API deve retornar o resultado já persistido.',
   );
 }
 
 async function conflictLast(): Promise<void> {
-  if (!lastRequest.value) return;
+  const request = lastRequest.value;
+  if (!request) return;
   const alteredPayload: WagerRequest = {
-    ...lastRequest.value.payload,
-    gameId: `${lastRequest.value.payload.gameId}-alterado`,
+    ...request.payload,
+    gameId: `${request.payload.gameId}-alterado`,
   };
   await process(
     alteredPayload,
-    lastRequest.value.key,
+    request.key,
     'Enviar conteúdo alterado usando a chave já persistida? A API deve responder com conflito de idempotência; nenhum novo lançamento deve ser criado.',
   );
 }
@@ -143,7 +160,7 @@ async function conflictLast(): Promise<void> {
 function prepareNewOperation(): void {
   externalTransactionId.value = newTransactionId();
   idempotencyKey.value = newTransactionId();
-  lastRequest.value = null;
+  emit('last-request-changed', null);
   submission.value = null;
   transaction.value = null;
   errorMessage.value = null;
@@ -167,17 +184,11 @@ async function lookup(): Promise<void> {
   }
 }
 
-async function openSubmittedTransaction(): Promise<void> {
-  if (!submission.value) return;
-  lookupMode.value = 'id';
-  lookupTransactionId.value = submission.value.transactionId;
-  await lookup();
-}
 </script>
 
 <template>
   <div class="workspace-grid">
-    <section class="workspace-card workspace-card-wide">
+    <section v-if="props.mode !== 'laboratory'" class="workspace-card workspace-card-wide">
       <div class="workspace-card-heading">
         <div><p class="section-kicker">SIMULADOR DE JOGADOR</p><h2>Enviar operação de jogo</h2></div>
         <span class="workspace-icon" aria-hidden="true">↗</span>
@@ -206,21 +217,36 @@ async function openSubmittedTransaction(): Promise<void> {
           <button class="secondary-button" type="button" :disabled="busy" @click="prepareNewOperation">Preparar nova operação</button>
         </div>
       </form>
-      <div v-if="lastRequest" class="idempotency-actions">
-        <div><strong>Testar idempotência da última solicitação</strong><span>Mesma chave: {{ lastRequest.key }}</span></div>
-        <div class="button-row">
-          <button class="secondary-button" type="button" :disabled="busy" @click="replayLast">Repetir exatamente</button>
-          <button class="warning-button" type="button" :disabled="busy" @click="conflictLast">Repetir com conteúdo alterado</button>
-        </div>
-      </div>
       <div v-if="submission" class="submission-result" role="status">
         <strong>{{ submission.status }}<span v-if="submission.idempotentReplay"> · repetição idempotente</span></strong>
         <dl><div><dt>Transação interna</dt><dd class="mono-value">{{ submission.transactionId }}</dd></div><div v-if="submission.balance"><dt>Saldo após a decisão</dt><dd>{{ submission.balance.amount }} {{ submission.balance.currency }}</dd></div><div v-if="submission.failureCode"><dt>Motivo da rejeição</dt><dd>{{ submission.failureCode }}</dd></div></dl>
-        <button class="secondary-button transaction-open-button" type="button" :disabled="busy" @click="openSubmittedTransaction">Consultar detalhes persistidos</button>
+        <button class="secondary-button transaction-open-button" type="button" @click="emit('open-statement')">Abrir extrato</button>
       </div>
     </section>
 
-    <section class="workspace-card workspace-card-wide">
+    <section v-if="props.mode === 'laboratory'" class="workspace-card workspace-card-wide">
+      <div class="workspace-card-heading">
+        <div><p class="section-kicker">CHAVE PERSISTIDA NO BACKEND</p><h2>Teste de idempotência</h2></div>
+        <span class="workspace-icon" aria-hidden="true">↻</span>
+      </div>
+      <p class="workspace-help">Repita a última solicitação feita em Jogo ou envie o mesmo conteúdo com a chave já usada. A API decide o resultado e o PostgreSQL garante a unicidade.</p>
+      <div v-if="!lastRequest" class="notice-box">Envie uma operação em Jogo para habilitar os testes com a mesma chave.</div>
+      <template v-else>
+        <div class="idempotency-actions">
+          <div><strong>Última chave de idempotência</strong><span>{{ lastRequest.key }}</span></div>
+          <div class="button-row">
+            <button class="secondary-button" type="button" :disabled="busy" @click="replayLast">Repetir exatamente</button>
+            <button class="warning-button" type="button" :disabled="busy" @click="conflictLast">Repetir com conteúdo alterado</button>
+          </div>
+        </div>
+      </template>
+      <div v-if="submission" class="submission-result" role="status">
+        <strong>{{ submission.status }}<span v-if="submission.idempotentReplay"> · repetição idempotente</span></strong>
+        <dl><div><dt>Transação</dt><dd class="mono-value">{{ submission.transactionId }}</dd></div><div v-if="submission.balance"><dt>Saldo registrado pela API</dt><dd>{{ submission.balance.amount }} {{ submission.balance.currency }}</dd></div><div v-if="submission.failureCode"><dt>Resultado</dt><dd>{{ submission.failureCode }}</dd></div></dl>
+      </div>
+    </section>
+
+    <section v-if="props.mode === 'laboratory'" class="workspace-card workspace-card-wide">
       <div class="workspace-card-heading">
         <div><p class="section-kicker">CONSULTA DE RESULTADO</p><h2>Localizar transação</h2></div>
         <span class="workspace-icon" aria-hidden="true">⌕</span>

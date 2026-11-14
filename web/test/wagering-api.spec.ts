@@ -63,4 +63,22 @@ describe('cliente HTTP das operações do painel', () => {
     expect(query.get('cursor')).toBe(cursor);
     expect(query.get('limit')).toBe('20');
   });
+
+  test('consulta o histórico persistido com carteira, limite e cursor opaco', async () => {
+    let capturedUrl = '';
+    const client = createWageringApi(async (input) => {
+      capturedUrl = String(input);
+      return Response.json({ items: [], nextCursor: null });
+    });
+    const walletId = '11111111-1111-4111-8111-111111111111';
+    const cursor = 'eyJyZXNvdXJjZSI6IndhbGxldC10cmFuc2FjdGlvbnMifQ';
+
+    const page = await client.getWalletTransactions(walletId, cursor, 10);
+
+    const query = new URL(capturedUrl, 'http://painel.local').searchParams;
+    expect(capturedUrl).toBe(`/api/wallets/${walletId}/transactions?limit=10&cursor=${encodeURIComponent(cursor)}`);
+    expect(query.get('cursor')).toBe(cursor);
+    expect(query.get('limit')).toBe('10');
+    expect(page).toEqual({ items: [], nextCursor: null });
+  });
 });

@@ -1,9 +1,13 @@
-<!-- Esta página abre e consulta carteiras, ledger e consistência do saldo. Assinatura: Leonardo de Souza da Luz -->
+<!-- Esta página apresenta abertura de carteira no jogo ou ledger e reconciliação no laboratório. Assinatura: Leonardo de Souza da Luz -->
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { ApiRequestError, wageringApi, type LedgerEntryView, type ReconciliationView, type WalletView } from '../../api/wagering-api';
 
-const props = defineProps<{ readonly wallet: WalletView | null }>();
+const props = defineProps<{
+  readonly wallet: WalletView | null;
+  readonly mode?: 'player' | 'laboratory';
+  readonly active?: boolean;
+}>();
 const emit = defineEmits<{ (event: 'wallet-selected', wallet: WalletView): void }>();
 
 const playerId = ref('');
@@ -46,7 +50,6 @@ async function createWallet(): Promise<void> {
     reconciliation.value = null;
     emit('wallet-selected', created);
     successMessage.value = 'Carteira criada e selecionada para as próximas operações.';
-    await loadLedger(created.id);
   } catch (error) {
     showError(error);
   } finally {
@@ -69,7 +72,6 @@ async function findWallet(): Promise<void> {
     nextCursor.value = null;
     reconciliation.value = null;
     successMessage.value = 'Carteira carregada.';
-    await loadLedger(found.id);
   } catch (error) {
     showError(error);
   } finally {
@@ -112,11 +114,23 @@ async function reconcile(): Promise<void> {
     busy.value = false;
   }
 }
+
+watch([() => props.wallet?.id, () => props.active], ([walletId, active]) => {
+  if (props.mode !== 'laboratory') {
+    return;
+  }
+  ledger.value = [];
+  nextCursor.value = null;
+  reconciliation.value = null;
+  if (walletId && active !== false) {
+    void loadLedger(walletId);
+  }
+}, { immediate: true });
 </script>
 
 <template>
   <div class="workspace-grid">
-    <section class="workspace-card">
+    <section v-if="props.mode !== 'laboratory'" class="workspace-card">
       <div class="workspace-card-heading">
         <div><p class="section-kicker">NOVO CLIENTE</p><h2>Abrir carteira</h2></div>
         <span class="workspace-icon" aria-hidden="true">＋</span>
@@ -133,7 +147,7 @@ async function reconcile(): Promise<void> {
       </form>
     </section>
 
-    <section class="workspace-card">
+    <section v-if="props.mode !== 'laboratory'" class="workspace-card">
       <div class="workspace-card-heading">
         <div><p class="section-kicker">CONSULTA</p><h2>Selecionar carteira</h2></div>
         <span class="workspace-icon" aria-hidden="true">⌕</span>
@@ -149,7 +163,7 @@ async function reconcile(): Promise<void> {
       </div>
     </section>
 
-    <section class="workspace-card workspace-card-wide">
+    <section v-if="props.mode === 'laboratory'" class="workspace-card workspace-card-wide">
       <div class="workspace-card-heading">
         <div><p class="section-kicker">REGISTRO IMUTÁVEL</p><h2>Ledger e reconciliação</h2></div>
         <button class="secondary-button compact-button" type="button" :disabled="busy || !props.wallet" @click="reconcile">Reconciliar carteira</button>
