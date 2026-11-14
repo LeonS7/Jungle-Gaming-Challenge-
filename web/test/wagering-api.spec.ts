@@ -32,6 +32,32 @@ describe('cliente HTTP das operações do painel', () => {
     expect(JSON.parse(String(capturedInit?.body)).money.amount).toBe('12.34');
   });
 
+  test('encaminha o sinal de timeout sem alterar payload ou chave de idempotência', async () => {
+    let capturedInit: RequestInit | undefined;
+    const client = createWageringApi(async (_input, init) => {
+      capturedInit = init;
+      return Response.json({ transactionId: 'transacao-timeout', status: 'PROCESSED', idempotentReplay: false });
+    });
+    const payload: WagerRequest = {
+      providerId: 'provedor-teste',
+      externalTransactionId: 'externa-timeout',
+      playerId: 'jogador-1',
+      walletId: '11111111-1111-4111-8111-111111111111',
+      roundId: 'rodada-1',
+      gameId: 'jogo-1',
+      kind: 'REFUND',
+      money: { amount: '80.00', currency: 'BRL' },
+      referenceExternalTransactionId: 'bet-original',
+    };
+    const controller = new AbortController();
+
+    await client.submitWager(payload, 'chave-original', controller.signal);
+
+    expect(capturedInit?.signal).toBe(controller.signal);
+    expect(new Headers(capturedInit?.headers).get('idempotency-key')).toBe('chave-original');
+    expect(JSON.parse(String(capturedInit?.body))).toEqual(payload);
+  });
+
   test('preserva código e mensagem de conflito HTTP para exibição ao usuário', async () => {
     const client = createWageringApi(async () => Response.json({
       statusCode: 409,

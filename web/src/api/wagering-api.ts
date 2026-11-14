@@ -170,11 +170,16 @@ export function createWageringApi(fetcher: ApiFetch = fetch) {
         method: 'POST',
       });
     },
-    submitWager(payload: WagerRequest, idempotencyKey: string): Promise<WagerSubmissionView> {
+    submitWager(
+      payload: WagerRequest,
+      idempotencyKey: string,
+      signal?: AbortSignal,
+    ): Promise<WagerSubmissionView> {
       return request('/wagering/transactions', {
         method: 'POST',
         headers: { 'idempotency-key': idempotencyKey },
         body: JSON.stringify(payload),
+        ...(signal ? { signal } : {}),
       });
     },
     getTransaction(transactionId: string): Promise<WagerTransactionView> {

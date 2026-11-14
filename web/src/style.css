@@ -159,6 +159,14 @@ h2 { margin: 0; color: #25362d; font-size: 15px; font-weight: 700; letter-spacin
 .primary-button:disabled, .secondary-button:disabled, .warning-button:disabled { cursor: wait; opacity: .55; }
 .compact-button { min-height: 32px; white-space: nowrap; }
 .wallet-summary, .submission-result, .transaction-result { margin-top: 17px; padding: 15px; border: 1px solid #e4ebe5; border-radius: 7px; background: #fbfdfb; }
+.selected-wallet-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; padding: 13px 16px; border: 1px solid #373d66; border-radius: 9px; background: linear-gradient(105deg, #151a37, #201b45); }
+.selected-wallet-banner > div { display: grid; gap: 5px; min-width: 0; }
+.selected-wallet-banner span { color: #aeb4d3; font-size: 9px; letter-spacing: .7px; overflow-wrap: anywhere; }
+.selected-wallet-banner strong { color: #f6d365; font-size: 18px; }
+.selected-wallet-banner .secondary-button { color: #e7e8ff; border-color: #444a72; background: #24294c; }
+.transaction-lab > .workspace-message { margin: 0; }
+.transaction-lab-result { grid-column: 1 / -1; margin: 0; }
+.retry-card { border-color: #806b39; }
 .wallet-summary > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: #79877e; font-size: 10px; }
 .wallet-summary > div:first-child strong { color: #1d6845; font-size: 18px; }
 .workspace-card dl { display: grid; gap: 9px; margin: 14px 0 0; }
@@ -264,6 +272,7 @@ h2 { margin: 0; color: #25362d; font-size: 15px; font-weight: 700; letter-spacin
   .operation-stat strong { font-size: 15px; }
   .stat-label { line-height: 1.4; }
   .workspace-grid { grid-template-columns: 1fr; }
+  .selected-wallet-banner { align-items: flex-start; flex-direction: column; }
   .workspace-card-wide { grid-column: auto; }
   .workspace-card { padding: 16px; }
   .form-row, .form-row-three { grid-template-columns: 1fr; }

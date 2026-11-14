@@ -6,6 +6,7 @@ import WageringWorkspace from './features/wagering/WageringWorkspace.vue';
 import TransactionHistoryWorkspace from './features/history/TransactionHistoryWorkspace.vue';
 import CasinoGameWorkspace from './features/game/CasinoGameWorkspace.vue';
 import GuidedScenariosWorkspace from './features/laboratory/GuidedScenariosWorkspace.vue';
+import TransactionLaboratoryWorkspace from './features/laboratory/TransactionLaboratoryWorkspace.vue';
 import {
   readSelectedWalletId,
   removeSelectedWalletId,
@@ -45,6 +46,18 @@ const sectionLabels: Readonly<Record<MainSection, string>> = {
   statement: 'Extrato',
   lab: 'Laboratório de Testes',
 };
+
+function showSection(section: MainSection): void {
+  activeSection.value = section;
+  if (section === 'lab') {
+    void refreshDashboard();
+  }
+}
+
+function onWalletSelected(wallet: WalletView): void {
+  selectWallet(wallet);
+  showSection('game');
+}
 
 const healthCards = computed(() => {
   if (!snapshot.value) {
@@ -174,7 +187,8 @@ onUnmounted(() => {
           :class="{ 'nav-item-active': activeSection === 'game' }"
           type="button"
           :aria-current="activeSection === 'game' ? 'page' : undefined"
-          @click="activeSection = 'game'"
+          aria-controls="secao-jogo"
+          @click="showSection('game')"
         >
           <span class="nav-icon" aria-hidden="true">♧</span>
           <span>Jogo</span>
@@ -184,7 +198,8 @@ onUnmounted(() => {
           :class="{ 'nav-item-active': activeSection === 'statement' }"
           type="button"
           :aria-current="activeSection === 'statement' ? 'page' : undefined"
-          @click="activeSection = 'statement'"
+          aria-controls="secao-extrato"
+          @click="showSection('statement')"
         >
           <span class="nav-icon" aria-hidden="true">▤</span>
           <span>Extrato</span>
@@ -194,7 +209,8 @@ onUnmounted(() => {
           :class="{ 'nav-item-active': activeSection === 'lab' }"
           type="button"
           :aria-current="activeSection === 'lab' ? 'page' : undefined"
-          @click="activeSection = 'lab'"
+          aria-controls="secao-laboratorio"
+          @click="showSection('lab')"
         >
           <span class="nav-icon" aria-hidden="true">⌁</span>
           <span>Laboratório de Testes</span>
@@ -225,7 +241,7 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <section v-show="activeSection === 'lab'" class="content-area">
+      <section v-if="activeSection === 'lab'" id="secao-laboratorio" class="content-area" aria-label="Laboratório de Testes">
         <section class="page-heading">
           <div>
             <p class="eyebrow">FERRAMENTAS TÉCNICAS <span>•</span> AMBIENTE LOCAL</p>
@@ -332,7 +348,7 @@ onUnmounted(() => {
           <WalletWorkspace
             :wallet="selectedWallet"
             mode="laboratory"
-            :active="activeSection === 'lab'"
+            :active="true"
           />
         </section>
         <section class="operation-screen operation-screen-spaced" aria-label="Ferramentas de wagering">
@@ -340,6 +356,12 @@ onUnmounted(() => {
             :wallet="selectedWallet"
             mode="laboratory"
             :last-request="lastWagerRequest"
+            @wallet-refreshed="selectWallet"
+          />
+        </section>
+        <section class="operation-screen operation-screen-spaced" aria-label="Reversões e referências pendentes">
+          <TransactionLaboratoryWorkspace
+            :wallet="selectedWallet"
             @wallet-refreshed="selectWallet"
           />
         </section>
@@ -352,7 +374,7 @@ onUnmounted(() => {
         </footer>
       </section>
 
-      <section v-show="activeSection === 'statement'" class="content-area operations-area">
+      <section v-else-if="activeSection === 'statement'" id="secao-extrato" class="content-area operations-area" aria-label="Extrato">
         <section class="page-heading">
           <div>
             <p class="eyebrow">HISTÓRICO PERSISTENTE <span>•</span> API REAL</p>
@@ -363,8 +385,8 @@ onUnmounted(() => {
         </section>
         <TransactionHistoryWorkspace
           :wallet-id="selectedWallet?.id ?? null"
-          :active="activeSection === 'statement'"
-          @return-to-game="activeSection = 'game'"
+          :active="true"
+          @return-to-game="showSection('game')"
         />
         <footer class="page-footer">
           <span class="footer-lock" aria-hidden="true">◈</span>
@@ -372,7 +394,7 @@ onUnmounted(() => {
         </footer>
       </section>
 
-      <section v-show="activeSection === 'game'" class="content-area operations-area">
+      <section v-else id="secao-jogo" class="content-area operations-area" aria-label="Jogo">
         <section class="page-heading">
           <div>
             <p class="eyebrow">EXPERIÊNCIA PRINCIPAL <span>•</span> OPERAÇÕES REAIS</p>
@@ -399,15 +421,22 @@ onUnmounted(() => {
           <WalletWorkspace
             :wallet="selectedWallet"
             mode="player"
-            @wallet-selected="selectWallet"
+            @wallet-selected="onWalletSelected"
           />
+        </section>
+        <section v-if="selectedWallet" class="selected-wallet-banner" aria-live="polite">
+          <div>
+            <span>CARTEIRA ATIVA · {{ selectedWallet.playerId }}</span>
+            <strong>{{ selectedWallet.balance.amount }} {{ selectedWallet.balance.currency }}</strong>
+          </div>
+          <button class="secondary-button" type="button" @click="showSection('statement')">Abrir extrato</button>
         </section>
         <section class="operation-screen operation-screen-spaced" aria-label="Mesa Fortune Chimp">
           <CasinoGameWorkspace
             :wallet="selectedWallet"
             @wallet-refreshed="selectWallet"
             @last-request-changed="lastWagerRequest = $event"
-            @open-statement="activeSection = 'statement'"
+            @open-statement="showSection('statement')"
           />
         </section>
         <footer class="page-footer operations-footer">
